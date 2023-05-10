@@ -1,0 +1,27 @@
+import os
+import openai
+from prompts import prompt
+openai.organization = "org-dIAExsTRPoyPv65UNbYUU1Gq"
+openai.api_key = "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"
+openai.Model.list()
+
+"""
+for i in range(12):
+    response = openai.Completion.create(model="text-davinci-003", prompt= prompt.TEST[i], temperature=0, max_tokens=50)
+    print(response.choices[0].text)
+
+
+for i in range(20):
+    if i > 0:
+        response = openai.Completion.create(model="text-davinci-003", prompt= "The person next to you says:" + response.choices[0].text + ". What do you respond?", temperature=2, max_tokens=50)
+        print(response.choices[0].text)
+    else:
+        response = "Hello i am Fred"
+        print(response)
+        response = openai.Completion.create(model="text-davinci-003", prompt= "The person next to you says:" + response + ". What do you respond?", temperature=0, max_tokens=50)
+        print(response.choices[0].text)
+"""
+response = openai.Completion.create(model="text-davinci-003", prompt= "The number sequence is 4,6,3,8", temperature=0.5, max_tokens=2500)
+print(response.choices[0].text)
+response = openai.Completion.create(model="text-davinci-003", prompt= "What was the second number of the number sequence", temperature=0.5, max_tokens=50)
+print(response.choices[0].text)
