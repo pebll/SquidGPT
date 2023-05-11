@@ -102,6 +102,8 @@ class Game:
                     participant.discussion.append({"role": "assistant", "content": response})
                     participant.clear_log()
                     Logger.log_discussion_message(participant, response, room)
+            elif len(room.participants) == 1:
+                Logger.log_alone(room.participants[0])
         Logger.log_discussion_end()
 
     def moving_phase(self):

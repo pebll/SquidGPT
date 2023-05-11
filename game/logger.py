@@ -62,3 +62,9 @@ class Logger:
 
     def log_participant_eliminated(self, participant):
         self.log(f"Participant {participant.get_participant()} eliminated.", None)
+
+    def log_alone(self, participant):
+        self.log(f"You are alone in room {participant.room}. No discussion phase for you this turn.", participant)
+
+
+
