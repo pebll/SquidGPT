@@ -3,3 +3,4 @@ class Room:
         self.name = name
         self.trapped = False
         self.participants = []
+        self.neighbors = []
