@@ -45,7 +45,7 @@ class Game:
             room.participants.extend([participant1, participant2])
 
     def start(self):
-        self.assign_starting_rooms()
+        self.assign_starting_rooms()      
         while len(self.participants) > 1:
             self.play_round()
         winner = self.participants[0]
@@ -95,12 +95,9 @@ class Game:
                     order.extend(temp_order)
                 for participant in order:
                     Logger.log_discussion_next(room, participant)
-                    prompt = self.create_prompt(participant, "discuss") # TODO: upgrade
-                    # Use GPT-3 to generate discussion responses using participant.chat_completion
-                    response = "Let's discuss the trapped rooms."
-                    participant.discussion.append({"role": "user", "content": prompt})
-                    participant.discussion.append({"role": "assistant", "content": response})
-                    participant.clear_log()
+                    prompt = self.create_prompt(participant, "say")                                
+                    participant.get_response(prompt)
+                    response = participant.get_last_response("say")                                    
                     Logger.log_discussion_message(participant, response, room)
             elif len(room.participants) == 1:
                 Logger.log_alone(room.participants[0])
@@ -109,9 +106,9 @@ class Game:
     def moving_phase(self):
         Logger.log_moving_start()
         for participant in self.participants:
-            prompt = self.create_prompt(participant, "move")
-            # Use GPT-3 to generate the desired move using participant.chat_completion
-            target_room_name = "A1"  # Replace this with the generated room name
+            prompt = self.create_prompt(participant, "move")                             
+            participant.get_response(prompt)
+            target_room_name = participant.get_last_response("move")               
             if target_room_name not in participant.room.neighbors:
                 target_room_name = participant.room.name
             target_room = self.rooms[target_room_name]
@@ -134,3 +131,4 @@ class Game:
         self.participants = remaining_participants
         for room in self.rooms.values():
             room.trapped = False
+
