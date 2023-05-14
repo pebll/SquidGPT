@@ -89,6 +89,7 @@ class Game:
         Logger.log_discussion_start()
         for room in self.rooms.values():
             if len(room.participants) > 1:
+                Logger.log_discussion_room(room)
                 order = []
                 temp_order = random.sample(room.participants, len(room.participants))
                 for _ in range(3):
