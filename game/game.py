@@ -3,6 +3,8 @@ from participant import Participant
 from room import Room
 from prompt import Prompt
 from logger import Logger
+import os
+import re
 
 class Game:
     
@@ -12,6 +14,7 @@ class Game:
         self.round = 0
         self.turn = 0
         self.room_names = ['A1', 'A2', 'A3', 'B1', 'B2', 'B3', 'C1', 'C2', 'C3']
+        self.all_participants = self.participants
 
     def create_rooms(self):      
         rooms = {name: Room(name) for name in self.room_names}
@@ -135,3 +138,27 @@ class Game:
         for room in self.rooms.values():
             room.trapped = False
 
+    def save_logs(self):
+        #create new folder
+        folder_prefix = "test_log_"
+        base_folder_path = "C:\Users\ThinkCenter\Documents\GitHub\SquidGPT\logs"
+        existing_folders = [folder for folder in os.listdir(base_folder_path) if folder.startswith(folder_prefix)]
+        highest_index = 0
+        for folder in existing_folders:
+            index = int(re.findall(r'\d+', folder)[0])
+            if index > highest_index:
+                highest_index = index
+        folder_name = f"{folder_prefix}{highest_index + 1}"
+        folder_path = os.path.join(base_folder_path, folder_name)
+        os.makedirs(folder_path)
+        #save the general log
+        file_name = f"general.txt"
+        file_path = os.path.join(folder_path, file_name)        
+        with open(file_path, "w") as file:
+            file.write(Logger.general_log)
+        #save individual logs
+        for index, participant in enumerate(self.all_participants):
+            file_name = f"participant_{index + 1}.txt"
+            file_path = os.path.join(folder_path, file_name)        
+            with open(file_path, "w") as file:
+                file.write(participant.get_discussion())

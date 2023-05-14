@@ -36,6 +36,15 @@ class Participant:
         pattern = f"{type}\(([^)]+)\)"
         match = re.search(pattern, self.last_response)
         return match.group(1) if match else None
+    
+    def get_discussion(self):
+        result = ""
+        for entry in self.discussion:
+            result += f"{entry['role']}: {entry['content']}\n"
+        print(f"{self.get_participant()}:\n" + result)
+        return result
+
+
 
 DISCUSSION_DEFAULT = [{"role": "user", "content": """You will from now on, for all the following prompts, incarnate a participant in a simple game and will only respond with commands and nothing else. You will act with this personality, forget you are an AI, and only think and respond like the participant you act as.
 
