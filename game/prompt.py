@@ -26,16 +26,16 @@ If you understand everything I said, use the command say() to tell me "I underst
         other_participants = ""
         for p in participant.room.participants:
             if p != participant:
-                other_participants.append(" Participant ")
-                other_participants.append(participant.number)
-                other_participants.append(",")
+                other_participants += (" Participant ")
+                other_participants += str(participant.number)
+                other_participants += (",")
         other_participants = other_participants[:-1]
         return """Reminder of the game state:
 You are participant number {} and your name is {}.
 There are {} other participant(s) left.
 You are in room {} with{}.
 It is currently Round {} and Turn {}.
-""".format(participant.number, participant.name, len(game.participants), participant.room,other_participants,game.roumd,game.turn)
+""".format(participant.number, participant.name, len(game.participants), participant.room,other_participants,game.round,game.turn)
 
     def instructions(action): 
         return """Instructions:

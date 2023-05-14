@@ -1,8 +1,11 @@
+import time
 import openai
 import re
+openai.organization = "org-dIAExsTRPoyPv65UNbYUU1Gq"
+openai.api_key = "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"
 
 class Participant:
-    def __init__(self, name, number, gpt):
+    def __init__(self, name, number, gpt, game):
         self.name = name
         self.number = number
         self.gpt = gpt
@@ -10,26 +13,32 @@ class Participant:
         self.log = ""
         self.discussion = DISCUSSION_DEFAULT
         self.last_response = ""
+        self.game = game
 
     def get_participant(self):
-        return "Participant " + self.number
+        return "Participant " + str(self.number)
 
     def clear_log(self):
         self.log = ""
 
     def move(self, room):
+        print("DEBUG room" + self.room.name +"participants" + str(self.room.participants))
         self.room.participants.remove(self)
         self.room = room
         self.room.participants.append(self)
 
     def get_response(self, prompt):
+        while(not self.check_if_gpt_free()):
+            time.sleep(2)
         self.discussion.append({"role": "user", "content": prompt})
+        self.game.last_gpt_call = time.time() 
         response = openai.ChatCompletion.create(
     	     model=self.gpt,
              messages=self.discussion) 
         self.last_response = response['choices'][0]['message']['content']  
         self.discussion.append({"role": "assistant", "content": self.last_response}) 
-        self.clear_log()    
+        self.clear_log()  
+         
         return self.last_response
     
     def get_last_response(self, type):
@@ -44,7 +53,10 @@ class Participant:
         print(f"{self.get_participant()}:\n" + result)
         return result
 
-
+    def check_if_gpt_free(self):
+        min_duration = 20
+        return time.time() > self.game.last_gpt_call + min_duration
+            
 
 DISCUSSION_DEFAULT = [{"role": "user", "content": """You will from now on, for all the following prompts, incarnate a participant in a simple game and will only respond with commands and nothing else. You will act with this personality, forget you are an AI, and only think and respond like the participant you act as.
 

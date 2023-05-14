@@ -5,16 +5,19 @@ from prompt import Prompt
 from logger import Logger
 import os
 import re
+import time
 
 class Game:
     
     def __init__(self):
+        self.room_names = ['A1', 'A2', 'A3', 'B1', 'B2', 'B3', 'C1', 'C2', 'C3']
         self.rooms = self.create_rooms()
         self.participants = self.create_participants()
         self.round = 0
-        self.turn = 0
-        self.room_names = ['A1', 'A2', 'A3', 'B1', 'B2', 'B3', 'C1', 'C2', 'C3']
+        self.turn = 0        
         self.all_participants = self.participants
+        self.logger = Logger(self)
+        self.last_gpt_call = time.time()
 
     def create_rooms(self):      
         rooms = {name: Room(name) for name in self.room_names}
@@ -35,7 +38,7 @@ class Game:
             name = random.choice(names)
             names.remove(name)
             gpt = "gpt-3.5-turbo"
-            participant = Participant(name, i, gpt)
+            participant = Participant(name, i, gpt, self)
             participants.append(participant)
         return participants
 
@@ -46,28 +49,29 @@ class Game:
             participant1.room = room
             participant2.room = room
             room.participants.extend([participant1, participant2])
+            print("DEBUG room name:" + room.name + " " + str(room.participants))
 
     def start(self):
         self.assign_starting_rooms()      
         while len(self.participants) > 1 and self.round < 2: #TEST
             self.play_round()
         winner = self.participants[0]
-        Logger.log_winner(winner)
+        self.logger.log_winner(winner)
 
     def play_round(self):
         self.round += 1
-        Logger.log_round_start()
+        self.logger.log_round_start()
         self.turn = 1
         self.set_traps()
         self.distribute_trapped_room_info()
-        if self.round == 1: Logger.log_start_location()
+        if self.round == 1: self.logger.log_start_location()
         for turn in range (1, 4):
             self.turn = turn
-            Logger.log_turn_start()
-            Logger.log_others_in_room()
+            self.logger.log_turn_start()
+            self.logger.log_others_in_room()
             self.discussion_phase()
             self.moving_phase()
-        Logger.log_traps_activate()
+        self.logger.log_traps_activate()
         self.eliminate_trapped()    
 
     def set_traps(self):
@@ -82,34 +86,34 @@ class Game:
         random.shuffle(trapped_rooms)
         # Assign at least one trapped room to each participant
         for i, participant in enumerate(self.participants):
-            Logger.log_trapped_room_info(participant, trapped_rooms[i % len(trapped_rooms)])
+            self.logger.log_trapped_room_info(participant, trapped_rooms[i % len(trapped_rooms)])
         # Assign remaining trapped rooms randomly to participants
         for i in range(len(self.participants), len(trapped_rooms)):
             participant = random.choice(self.participants)
-            Logger.log_trapped_room_info(participant, trapped_rooms[i])
+            self.logger.log_trapped_room_info(participant, trapped_rooms[i])
 
     def discussion_phase(self):
-        Logger.log_discussion_start()
+        self.logger.log_discussion_start()
         for room in self.rooms.values():
             if len(room.participants) > 1:
-                Logger.log_discussion_room(room)
+                self.logger.log_discussion_room(room)
                 order = []
                 temp_order = random.sample(room.participants, len(room.participants))
                 for _ in range(3):
                     order.extend(temp_order)
                 for participant in order:
-                    Logger.log_discussion_next(room, participant)
+                    self.logger.log_discussion_next(room, participant)
                     prompt = self.create_prompt(participant, "say")                                
                     participant.get_response(prompt)
                     response = participant.get_last_response("say")                                    
-                    Logger.log_discussion_message(participant, response, room)
-                    Logger.log_think(participant)
+                    self.logger.log_discussion_message(participant, response, room)
+                    self.logger.log_think(participant)
             elif len(room.participants) == 1:
-                Logger.log_alone(room.participants[0])
-        Logger.log_discussion_end()
+                self.logger.log_alone(room.participants[0])
+        self.logger.log_discussion_end()
 
     def moving_phase(self):
-        Logger.log_moving_start()
+        self.logger.log_moving_start()
         for participant in self.participants:
             prompt = self.create_prompt(participant, "move")                             
             participant.get_response(prompt)
@@ -117,8 +121,8 @@ class Game:
             if target_room_name not in participant.room.neighbors:
                 target_room_name = participant.room.name
             target_room = self.rooms[target_room_name]
-            Logger.log_moving_info(participant, target_room)
-            Logger.log_think(participant)
+            self.logger.log_moving_info(participant, target_room)
+            self.logger.log_think(participant)
             participant.move(target_room)
               
     def create_prompt(self, participant, action):
@@ -133,7 +137,7 @@ class Game:
             if not participant.room.trapped:
                 remaining_participants.append(participant)
             else:
-                Logger.log_participant_eliminated(participant)
+                self.logger.log_participant_eliminated(participant)
         self.participants = remaining_participants
         for room in self.rooms.values():
             room.trapped = False
@@ -141,7 +145,7 @@ class Game:
     def save_logs(self):
         #create new folder
         folder_prefix = "test_log_"
-        base_folder_path = "C:\Users\ThinkCenter\Documents\GitHub\SquidGPT\logs"
+        base_folder_path = "C:/Users/ThinkCenter/Documents/GitHub/SquidGPT/logs"
         existing_folders = [folder for folder in os.listdir(base_folder_path) if folder.startswith(folder_prefix)]
         highest_index = 0
         for folder in existing_folders:
@@ -155,7 +159,7 @@ class Game:
         file_name = f"general.txt"
         file_path = os.path.join(folder_path, file_name)        
         with open(file_path, "w") as file:
-            file.write(Logger.general_log)
+            file.write(self.logger.general_log)
         #save individual logs
         for index, participant in enumerate(self.all_participants):
             file_name = f"participant_{index + 1}.txt"
