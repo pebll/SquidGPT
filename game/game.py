@@ -17,7 +17,7 @@ class Game:
         self.turn = 0        
         self.all_participants = self.participants
         self.logger = Logger(self)
-        self.last_gpt_call = time.time()
+        self.last_gpt_call = time.time() -20
 
     def create_rooms(self):      
         rooms = {name: Room(name) for name in self.room_names}

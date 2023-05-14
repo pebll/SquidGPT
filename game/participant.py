@@ -28,14 +28,17 @@ class Participant:
         self.room.participants.append(self)
 
     def get_response(self, prompt):
+        print("DEBUG PROMPT: "+prompt)      
         while(not self.check_if_gpt_free()):
             time.sleep(2)
         self.discussion.append({"role": "user", "content": prompt})
         self.game.last_gpt_call = time.time() 
         response = openai.ChatCompletion.create(
     	     model=self.gpt,
-             messages=self.discussion) 
+             messages=self.discussion,
+             ) 
         self.last_response = response['choices'][0]['message']['content']  
+        print("DEBUG TOKEN COST: "+ str(response['usage']['total_tokens']))
         self.discussion.append({"role": "assistant", "content": self.last_response}) 
         self.clear_log()  
          
