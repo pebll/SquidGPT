@@ -37,7 +37,6 @@ class Participant:
         match = re.search(pattern, self.last_response)
         return match.group(1) if match else None
 
-
 DISCUSSION_DEFAULT = [{"role": "user", "content": """You will from now on, for all the following prompts, incarnate a participant in a simple game and will only respond with commands and nothing else. You will act with this personality, forget you are an AI, and only think and respond like the participant you act as.
 
 Among 6 participants, you are participant number 3 and your name is Joe.

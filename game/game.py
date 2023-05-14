@@ -46,10 +46,10 @@ class Game:
 
     def start(self):
         self.assign_starting_rooms()      
-        while len(self.participants) > 1:
+        while len(self.participants) > 1 and self.round < 2: #TEST
             self.play_round()
         winner = self.participants[0]
-        print(f"{winner.name} is the winner!")
+        Logger.log_winner(winner)
 
     def play_round(self):
         self.round += 1
@@ -100,6 +100,7 @@ class Game:
                     participant.get_response(prompt)
                     response = participant.get_last_response("say")                                    
                     Logger.log_discussion_message(participant, response, room)
+                    Logger.log_think(participant)
             elif len(room.participants) == 1:
                 Logger.log_alone(room.participants[0])
         Logger.log_discussion_end()
@@ -114,6 +115,7 @@ class Game:
                 target_room_name = participant.room.name
             target_room = self.rooms[target_room_name]
             Logger.log_moving_info(participant, target_room)
+            Logger.log_think(participant)
             participant.move(target_room)
               
     def create_prompt(self, participant, action):

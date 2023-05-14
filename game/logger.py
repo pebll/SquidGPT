@@ -90,5 +90,9 @@ class Logger:
     def log_alone(self, participant):
         self.log(f"You are alone in room {participant.room}. No discussion phase for you this turn.", participant)
 
+    def log_think(self, participant):
+        self.general_log(f"""{participant.get_participant()} thinks "{participant.get_last_response("think")}".""")
 
+    def log_winner(self, participant):
+        self.general_log(f"{participant.get_participant()} is the winner!") 
 
