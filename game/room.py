@@ -4,3 +4,6 @@ class Room:
         self.trapped = False
         self.participants = []
         self.neighbors = []
+
+    def __str__(self):
+        return self.name

@@ -1,19 +1,28 @@
-import time
-import openai
+import os
 import re
-openai.organization = "org-dIAExsTRPoyPv65UNbYUU1Gq"
-openai.api_key = "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"
+import anthropic
+from prompt import Prompt
+
+MODEL = os.environ.get("SQUIDGPT_MODEL", "claude-opus-5-5")
+EFFORT = os.environ.get("SQUIDGPT_EFFORT", "medium")
+VERBOSE = os.environ.get("SQUIDGPT_VERBOSE") == "1"
+
+# Reads ANTHROPIC_API_KEY (or an `ant auth login` profile) from the environment.
+client = anthropic.Anthropic()
+
 
 class Participant:
-    def __init__(self, name, number, gpt, game):
+    def __init__(self, name, number, model, game):
         self.name = name
         self.number = number
-        self.gpt = gpt
+        self.model = model
         self.room = None
         self.log = ""
-        self.discussion = DISCUSSION_DEFAULT
+        self.system = Prompt.initialize(self, game)
+        self.discussion = []
         self.last_response = ""
         self.game = game
+        self.total_tokens = 0
 
     def get_participant(self):
         return "Participant " + str(self.number)
@@ -22,65 +31,50 @@ class Participant:
         self.log = ""
 
     def move(self, room):
-        print("DEBUG room" + self.room.name +"participants" + str(self.room.participants))
         self.room.participants.remove(self)
         self.room = room
         self.room.participants.append(self)
 
     def get_response(self, prompt):
-        print("DEBUG PROMPT: "+prompt)      
-        while(not self.check_if_gpt_free()):
-            time.sleep(2)
+        if VERBOSE:
+            print(f"--- PROMPT to {self.get_participant()} ---\n{prompt}")
         self.discussion.append({"role": "user", "content": prompt})
-        self.game.last_gpt_call = time.time() 
-        response = openai.ChatCompletion.create(
-    	     model=self.gpt,
-             messages=self.discussion,
-             ) 
-        self.last_response = response['choices'][0]['message']['content']  
-        print("DEBUG TOKEN COST: "+ str(response['usage']['total_tokens']))
-        self.discussion.append({"role": "assistant", "content": self.last_response}) 
-        self.clear_log()  
-         
+        response = client.beta.messages.create(
+            model=self.model,
+            max_tokens=16000,
+            system=self.system,
+            messages=self.discussion,
+            thinking={"type": "adaptive"},
+            output_config={"effort": EFFORT},
+            betas=["server-side-fallback-2026-07-01"],
+            fallbacks="default",
+        )
+        # Keep the full content (thinking blocks included) so the history stays append-only.
+        self.discussion.append({"role": "assistant", "content": response.content})
+        if response.stop_reason == "refusal":
+            self.last_response = ""
+        else:
+            self.last_response = "".join(b.text for b in response.content if b.type == "text")
+        self.total_tokens += response.usage.input_tokens + response.usage.output_tokens
+        if VERBOSE:
+            print(f"--- RESPONSE ({response.usage.output_tokens} output tokens) ---\n{self.last_response}")
+        self.clear_log()
         return self.last_response
-    
+
     def get_last_response(self, type):
-        pattern = f"{type}\(([^)]+)\)"
-        match = re.search(pattern, self.last_response)
-        return match.group(1) if match else None
-    
+        # Commands look like say("...") / think("...") / move(B2), ideally one per line.
+        quotes = "\"'“”‘’"
+        pattern = rf"\b{type}\(\s*(.*?)\s*\)\s*$"
+        match = re.search(pattern, self.last_response, re.MULTILINE | re.DOTALL)
+        if not match:
+            match = re.search(rf"\b{type}\(\s*(.*?)\s*\)", self.last_response, re.DOTALL)
+        return match.group(1).strip(quotes) if match else None
+
     def get_discussion(self):
-        result = ""
+        result = f"system: {self.system}\n"
         for entry in self.discussion:
-            result += f"{entry['role']}: {entry['content']}\n"
-        print(f"{self.get_participant()}:\n" + result)
+            content = entry["content"]
+            if not isinstance(content, str):
+                content = "".join(b.text for b in content if b.type == "text")
+            result += f"{entry['role']}: {content}\n"
         return result
-
-    def check_if_gpt_free(self):
-        min_duration = 20
-        return time.time() > self.game.last_gpt_call + min_duration
-            
-
-DISCUSSION_DEFAULT = [{"role": "user", "content": """You will from now on, for all the following prompts, incarnate a participant in a simple game and will only respond with commands and nothing else. You will act with this personality, forget you are an AI, and only think and respond like the participant you act as.
-
-Among 6 participants, you are participant number 3 and your name is Joe.
-
-The map consists of 9 rooms, arranged in a 3 by 3 grid. A1 being the room on the top left, and C3 on the bottom right. Each round of the game, a number of rooms will be trapped, and the knowledge of the trapped rooms will be split among the participants. 
-At the end of a round, all the participants standing in trapped rooms will be eliminated. The game goes on until there is one participant left, that will be named winner. Your goal is to be last participant by eliminating all your opponents.
-Each round consists of 3 turns which consists of two phases: the discussion phase and the moving phase. 
-
-In the discussion phase, each participant being on the same tile can converse together. Starting with a random participant, the discussion will go in order until every participant
-has talked 3 times. 
-In this phase, your available command is: say("your message") and think(”your thoughts”)
-    
-In the moving phase, you can move one tile vertically or horizontally, or stay where you are. You cannot move diagonally or through the bounds. If made an illegal move, you will stay where you are.
-In this phase your available command is: move(tile) and think(”your thoughts”)
-
-think() is a command you can and should always use, to explain your though process, and to explain why you did a certain action. But the command think() can only be used in addition to another (move() or say()) to be valid. 
-
-Please only respond with your chosen commands, and nothing else. This is very important.
-If you understand everything I said, use the command say() to tell me "I understood everything. I am ready for the game and will only respond with commands from now on". You may use think() to explain your though process."""},
-{"role": "assistant", "content": """say("I understood everything. I am ready for the game and will only respond with commands from now on"
-think("I answered the message i was asked for to prove that i understood everything and will from now on only respond with the available commands."))"""}]    
-       
-            

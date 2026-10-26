@@ -1,10 +1,10 @@
 
 
 class Logger:
-    general_log = ""
 
     def __init__(self, game):
         self.game = game
+        self.general_log = ""
 
     def log(self, message, participant=None):       
         if isinstance(participant, list):
@@ -26,7 +26,7 @@ class Logger:
         self.log_general(message)
 
     def log_turn_start(self):
-        message = f"Turn {self.game.turn} starts, new traps set."
+        message = f"Turn {self.game.turn} starts."
         self.log(message, None)
         self.log_general(message)
 
@@ -60,7 +60,7 @@ class Logger:
 
     def log_discussion_message(self, speaker, message, room):
         recipients = [p for p in room.participants if p != speaker]
-        log = f"{speaker.get_participant()} says: {message}"
+        log = f"{speaker.get_participant()} says: {message}" if message else f"{speaker.get_participant()} stays silent."
         self.log(log, recipients)
         self.log_general(log)
 
@@ -74,7 +74,7 @@ class Logger:
 
     def log_moving_info(self, mover, target_room):
         verb = "stay" if mover.room == target_room else "move"
-        adverb = "in "if mover.room == target_room else "to"
+        adverb = "in" if mover.room == target_room else "to"
         for participant in mover.room.participants:
             name = "You" if participant == mover else mover.get_participant()
             endung = "" if participant == mover else "s"
@@ -87,7 +87,7 @@ class Logger:
         self.log_general(message)
 
     def log_participant_eliminated(self, participant):
-        message = f"Participant {participant.get_participant()} eliminated."
+        message = f"{participant.get_participant()} ({participant.name}) was in trapped room {participant.room.name} and is eliminated."
         self.log(message, None)
         self.log_general(message)
 
@@ -95,8 +95,10 @@ class Logger:
         self.log(f"You are alone in room {participant.room}. No discussion phase for you this turn.", participant)
 
     def log_think(self, participant):
+        if participant.get_last_response("think") is None:
+            return
         self.log_general(f"""{participant.get_participant()} thinks {participant.get_last_response("think")}.""")
 
     def log_winner(self, participant):
-        self.log_general(f"{participant.get_participant()} is the winner!") 
+        self.log_general(f"{participant.get_participant()} ({participant.name}) is the winner!")
 

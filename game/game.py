@@ -1,23 +1,23 @@
 import random
-from participant import Participant
+from participant import Participant, MODEL
 from room import Room
 from prompt import Prompt
 from logger import Logger
 import os
 import re
-import time
 
 class Game:
     
-    def __init__(self):
+    def __init__(self, player_count=6, max_rounds=10):
         self.room_names = ['A1', 'A2', 'A3', 'B1', 'B2', 'B3', 'C1', 'C2', 'C3']
         self.rooms = self.create_rooms()
+        self.player_count = player_count
+        self.max_rounds = max_rounds
         self.participants = self.create_participants()
         self.round = 0
-        self.turn = 0        
-        self.all_participants = self.participants
+        self.turn = 0
+        self.all_participants = list(self.participants)
         self.logger = Logger(self)
-        self.last_gpt_call = time.time() -20
 
     def create_rooms(self):      
         rooms = {name: Room(name) for name in self.room_names}
@@ -34,11 +34,10 @@ class Game:
     def create_participants(self):
         participants = []
         names = ["Alice", "Bob", "Charlie", "David", "Joe", "Fred", "Barty", "Anne", "Juliette"]
-        for i in range(1, 7):
+        for i in range(1, self.player_count + 1):
             name = random.choice(names)
             names.remove(name)
-            gpt = "gpt-3.5-turbo"
-            participant = Participant(name, i, gpt, self)
+            participant = Participant(name, i, MODEL, self)
             participants.append(participant)
         return participants
 
@@ -49,14 +48,21 @@ class Game:
             participant1.room = room
             participant2.room = room
             room.participants.extend([participant1, participant2])
-            print("DEBUG room name:" + room.name + " " + str(room.participants))
 
     def start(self):
         self.assign_starting_rooms()      
-        while len(self.participants) > 1 and self.round < 2: #TEST
+        while len(self.participants) > 1 and self.round < self.max_rounds:
             self.play_round()
-        winner = self.participants[0]
-        self.logger.log_winner(winner)
+        if len(self.participants) == 1:
+            self.logger.log_winner(self.participants[0])
+        elif not self.participants:
+            self.logger.log_general("Everyone was eliminated. Nobody wins.")
+        else:
+            survivors = ", ".join(p.get_participant() for p in self.participants)
+            self.logger.log_general(f"Round limit reached. Survivors: {survivors}.")
+        total_tokens = sum(p.total_tokens for p in self.all_participants)
+        self.logger.log_general(f"Total tokens used: {total_tokens}.")
+        self.save_logs()
 
     def play_round(self):
         self.round += 1
@@ -117,7 +123,7 @@ class Game:
         for participant in self.participants:
             prompt = self.create_prompt(participant, "move")                             
             participant.get_response(prompt)
-            target_room_name = participant.get_last_response("move")               
+            target_room_name = (participant.get_last_response("move") or "").upper()
             if target_room_name not in participant.room.neighbors:
                 target_room_name = participant.room.name
             target_room = self.rooms[target_room_name]
@@ -138,6 +144,7 @@ class Game:
                 remaining_participants.append(participant)
             else:
                 self.logger.log_participant_eliminated(participant)
+                participant.room.participants.remove(participant)
         self.participants = remaining_participants
         for room in self.rooms.values():
             room.trapped = False
@@ -145,7 +152,8 @@ class Game:
     def save_logs(self):
         #create new folder
         folder_prefix = "test_log_"
-        base_folder_path = "C:/Users/ThinkCenter/Documents/GitHub/SquidGPT/logs"
+        base_folder_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs")
+        os.makedirs(base_folder_path, exist_ok=True)
         existing_folders = [folder for folder in os.listdir(base_folder_path) if folder.startswith(folder_prefix)]
         highest_index = 0
         for folder in existing_folders:
@@ -158,11 +166,12 @@ class Game:
         #save the general log
         file_name = f"general.txt"
         file_path = os.path.join(folder_path, file_name)        
-        with open(file_path, "w") as file:
+        with open(file_path, "w", encoding="utf-8") as file:
             file.write(self.logger.general_log)
         #save individual logs
         for index, participant in enumerate(self.all_participants):
             file_name = f"participant_{index + 1}.txt"
             file_path = os.path.join(folder_path, file_name)        
-            with open(file_path, "w") as file:
+            with open(file_path, "w", encoding="utf-8") as file:
                 file.write(participant.get_discussion())
+        print(f"Logs saved to {os.path.normpath(folder_path)}")
