@@ -1,25 +1,53 @@
+import json
 import random
-from participant import Participant, MODEL
+import threading
+import traceback
+from participant import Participant, MODEL, EFFORT
 from room import Room
 from prompt import Prompt
 from logger import Logger
 import os
 import re
 
+NAMES = ["Alice", "Bob", "Charlie", "David", "Joe", "Fred", "Barty", "Anne", "Juliette"]
+MAX_PLAYERS = len(NAMES)
+
+
+class GameStopped(Exception):
+    pass
+
+
 class Game:
-    
-    def __init__(self, player_count=6, max_rounds=10):
+
+    def __init__(self, player_count=6, max_rounds=10, model=MODEL, effort=EFFORT, echo=True):
+        if not 2 <= player_count <= MAX_PLAYERS:
+            raise ValueError(f"player_count must be between 2 and {MAX_PLAYERS}")
         self.room_names = ['A1', 'A2', 'A3', 'B1', 'B2', 'B3', 'C1', 'C2', 'C3']
         self.rooms = self.create_rooms()
         self.player_count = player_count
         self.max_rounds = max_rounds
-        self.participants = self.create_participants()
+        self.model = model
+        self.effort = effort
+        self.echo = echo
         self.round = 0
         self.turn = 0
+        self.phase = "setup"
+        self.status = "ready"  # ready, running, paused, finished, stopped, error
+        self.error = None
+        self.log_folder = None
+        self.events = []
+        self.api_calls = []
+        self.trapped_rooms = []  # rooms trapped in the current (or last) round
+        self.participants = self.create_participants()
         self.all_participants = list(self.participants)
         self.logger = Logger(self)
+        # Controls used by the GUI: pause/resume, single-step and stop.
+        self._resume = threading.Event()
+        self._resume.set()
+        self._stop = threading.Event()
+        self.step_mode = False
 
-    def create_rooms(self):      
+    def create_rooms(self):
         rooms = {name: Room(name) for name in self.room_names}
         for name, room in rooms.items():
             neighbors = []
@@ -32,63 +60,118 @@ class Game:
         return rooms
 
     def create_participants(self):
-        participants = []
-        names = ["Alice", "Bob", "Charlie", "David", "Joe", "Fred", "Barty", "Anne", "Juliette"]
-        for i in range(1, self.player_count + 1):
-            name = random.choice(names)
-            names.remove(name)
-            participant = Participant(name, i, MODEL, self)
-            participants.append(participant)
-        return participants
+        names = random.sample(NAMES, self.player_count)
+        return [Participant(name, i, self) for i, name in enumerate(names, start=1)]
 
     def assign_starting_rooms(self):
-        starting_rooms = random.sample(list(self.rooms.values()), len(self.participants) // 2)
-        for i, room in enumerate(starting_rooms):
-            participant1, participant2 = self.participants[2*i], self.participants[2*i+1]
-            participant1.room = room
-            participant2.room = room
-            room.participants.extend([participant1, participant2])
+        # Pairs of participants share a room; with an odd count the last one starts alone.
+        groups = [self.participants[i:i + 2] for i in range(0, len(self.participants), 2)]
+        starting_rooms = random.sample(list(self.rooms.values()), len(groups))
+        for room, group in zip(starting_rooms, groups):
+            for participant in group:
+                participant.room = room
+                room.participants.append(participant)
+
+    # --- controls -------------------------------------------------------
+
+    @property
+    def paused(self):
+        """True when paused or single-stepping, i.e. when the GUI should offer Resume."""
+        return self.step_mode or not self._resume.is_set()
+
+    def pause(self):
+        self._resume.clear()
+        if self.status == "running":
+            self.status = "paused"
+
+    def resume(self):
+        self.step_mode = False
+        self._resume.set()
+
+    def step(self):
+        """Let exactly one more API call through, then pause again."""
+        self.step_mode = True
+        self._resume.set()
+
+    def stop(self):
+        self._stop.set()
+        self._resume.set()
+
+    def checkpoint(self):
+        """Called before every API call: honours pause, step and stop requests."""
+        if self.step_mode:
+            self._resume.clear()
+            self.step_mode = False
+            self.status = "paused"
+        if not self._resume.is_set():
+            self.status = "paused"
+            self._resume.wait()
+        if self._stop.is_set():
+            raise GameStopped()
+        self.status = "running"
+
+    def run(self):
+        """Run a full game, catching errors so a background thread can report them."""
+        try:
+            self.start()
+            self.status = "finished"
+        except GameStopped:
+            self.logger.log_general("Game stopped by user.", kind="end")
+            self.status = "stopped"
+        except Exception as e:
+            self.error = traceback.format_exc()
+            self.logger.log_general(f"Game crashed: {type(e).__name__}: {e}", kind="error")
+            self.status = "error"
+        finally:
+            self.phase = "over"
+            try:
+                self.save_logs()
+            except Exception:
+                self.error = (self.error or "") + "\nSaving logs failed:\n" + traceback.format_exc()
+
+    # --- game flow ------------------------------------------------------
 
     def start(self):
-        self.assign_starting_rooms()      
+        self.status = "running"
+        self.assign_starting_rooms()
         while len(self.participants) > 1 and self.round < self.max_rounds:
             self.play_round()
         if len(self.participants) == 1:
             self.logger.log_winner(self.participants[0])
         elif not self.participants:
-            self.logger.log_general("Everyone was eliminated. Nobody wins.")
+            self.logger.log_general("Everyone was eliminated. Nobody wins.", kind="end")
         else:
             survivors = ", ".join(p.get_participant() for p in self.participants)
-            self.logger.log_general(f"Round limit reached. Survivors: {survivors}.")
+            self.logger.log_general(f"Round limit reached. Survivors: {survivors}.", kind="end")
         total_tokens = sum(p.total_tokens for p in self.all_participants)
-        self.logger.log_general(f"Total tokens used: {total_tokens}.")
-        self.save_logs()
+        self.logger.log_general(f"Total tokens used: {total_tokens}.", kind="end")
 
     def play_round(self):
         self.round += 1
+        self.turn = 0
         self.logger.log_round_start()
-        self.turn = 1
         self.set_traps()
         self.distribute_trapped_room_info()
-        if self.round == 1: self.logger.log_start_location()
-        for turn in range (1, 4):
+        if self.round == 1:
+            self.logger.log_start_location()
+        for turn in range(1, 4):
             self.turn = turn
             self.logger.log_turn_start()
             self.logger.log_others_in_room()
             self.discussion_phase()
             self.moving_phase()
+        self.phase = "traps"
         self.logger.log_traps_activate()
-        self.eliminate_trapped()    
+        self.eliminate_trapped()
 
     def set_traps(self):
-        trap_count = random.randint(1, 3) # Change later to incrementing
-        trapped_rooms = random.sample(list(self.rooms.values()), trap_count)
-        for room in trapped_rooms:
+        trap_count = random.randint(1, 3)  # Change later to incrementing
+        self.trapped_rooms = random.sample(list(self.rooms.values()), trap_count)
+        for room in self.trapped_rooms:
             room.trapped = True
 
     def distribute_trapped_room_info(self):
-
-        trapped_rooms = [room for room in self.rooms.values() if room.trapped]
+        trapped_rooms = list(self.trapped_rooms)
         random.shuffle(trapped_rooms)
         # Assign at least one trapped room to each participant
         for i, participant in enumerate(self.participants):
@@ -99,19 +182,16 @@ class Game:
             self.logger.log_trapped_room_info(participant, trapped_rooms[i])
 
     def discussion_phase(self):
+        self.phase = "discussion"
         self.logger.log_discussion_start()
         for room in self.rooms.values():
             if len(room.participants) > 1:
                 self.logger.log_discussion_room(room)
-                order = []
-                temp_order = random.sample(room.participants, len(room.participants))
-                for _ in range(3):
-                    order.extend(temp_order)
-                for participant in order:
+                speakers = random.sample(room.participants, len(room.participants))
+                for participant in speakers * 3:
                     self.logger.log_discussion_next(room, participant)
-                    prompt = self.create_prompt(participant, "say")                                
-                    participant.get_response(prompt)
-                    response = participant.get_last_response("say")                                    
+                    participant.get_response(self.create_prompt(participant, "say"), "say")
+                    response = participant.get_last_response("say")
                     self.logger.log_discussion_message(participant, response, room)
                     self.logger.log_think(participant)
             elif len(room.participants) == 1:
@@ -119,10 +199,10 @@ class Game:
         self.logger.log_discussion_end()
 
     def moving_phase(self):
+        self.phase = "moving"
         self.logger.log_moving_start()
         for participant in self.participants:
-            prompt = self.create_prompt(participant, "move")                             
-            participant.get_response(prompt)
+            participant.get_response(self.create_prompt(participant, "move"), "move")
             target_room_name = (participant.get_last_response("move") or "").upper()
             if target_room_name not in participant.room.neighbors:
                 target_room_name = participant.room.name
@@ -130,7 +210,7 @@ class Game:
             self.logger.log_moving_info(participant, target_room)
             self.logger.log_think(participant)
             participant.move(target_room)
-              
+
     def create_prompt(self, participant, action):
         game_state = Prompt.gamestate(participant, self)
         log = participant.log
@@ -143,35 +223,32 @@ class Game:
             if not participant.room.trapped:
                 remaining_participants.append(participant)
             else:
+                participant.eliminated_round = self.round
                 self.logger.log_participant_eliminated(participant)
                 participant.room.participants.remove(participant)
         self.participants = remaining_participants
         for room in self.rooms.values():
             room.trapped = False
 
+    # --- persistence ----------------------------------------------------
+
     def save_logs(self):
-        #create new folder
         folder_prefix = "test_log_"
         base_folder_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs")
         os.makedirs(base_folder_path, exist_ok=True)
-        existing_folders = [folder for folder in os.listdir(base_folder_path) if folder.startswith(folder_prefix)]
-        highest_index = 0
-        for folder in existing_folders:
-            index = int(re.findall(r'\d+', folder)[0])
-            if index > highest_index:
-                highest_index = index
-        folder_name = f"{folder_prefix}{highest_index + 1}"
-        folder_path = os.path.join(base_folder_path, folder_name)
+        indexes = [int(m.group(1)) for folder in os.listdir(base_folder_path)
+                   if (m := re.fullmatch(rf"{folder_prefix}(\d+)", folder))]
+        folder_path = os.path.normpath(os.path.join(base_folder_path, f"{folder_prefix}{max(indexes, default=0) + 1}"))
         os.makedirs(folder_path)
-        #save the general log
-        file_name = f"general.txt"
-        file_path = os.path.join(folder_path, file_name)        
-        with open(file_path, "w", encoding="utf-8") as file:
+        with open(os.path.join(folder_path, "general.txt"), "w", encoding="utf-8") as file:
             file.write(self.logger.general_log)
-        #save individual logs
         for index, participant in enumerate(self.all_participants):
-            file_name = f"participant_{index + 1}.txt"
-            file_path = os.path.join(folder_path, file_name)        
-            with open(file_path, "w", encoding="utf-8") as file:
+            with open(os.path.join(folder_path, f"participant_{index + 1}.txt"), "w", encoding="utf-8") as file:
                 file.write(participant.get_discussion())
-        print(f"Logs saved to {os.path.normpath(folder_path)}")
+        # Every API call with its prompt, raw response, reasoning summary, tokens and latency.
+        with open(os.path.join(folder_path, "api_calls.jsonl"), "w", encoding="utf-8") as file:
+            for call in self.api_calls:
+                file.write(json.dumps(call, ensure_ascii=False) + "\n")
+        self.log_folder = folder_path
+        if self.echo:
+            print(f"Logs saved to {folder_path}")
