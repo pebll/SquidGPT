@@ -14,11 +14,12 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from game import Game, MAX_PLAYERS  # noqa: E402
-from participant import MODEL, EFFORT  # noqa: E402
+from participant import MODEL, MODELS, EFFORT  # noqa: E402
 
 st.set_page_config(page_title="SquidGPT", page_icon="🦑", layout="wide")
 
-EFFORTS = ["low", "medium", "high", "xhigh", "max"]
+EFFORTS = ["default", "low", "medium", "high"]
+OTHER_MODEL = "other"
 PLAYER_COLORS = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4",
                  "#42d4f4", "#f032e6", "#9a6324", "#469990"]
 KIND_ICONS = {
@@ -61,18 +62,25 @@ def sidebar():
     st.sidebar.title("🦑 SquidGPT")
     with st.sidebar.form("settings"):
         st.subheader("New game")
-        model = st.text_input("Model", value=MODEL)
-        effort = st.selectbox("Effort", EFFORTS, index=EFFORTS.index(EFFORT) if EFFORT in EFFORTS else 1)
+        model_ids = list(MODELS) + ([] if MODEL in MODELS else [MODEL]) + [OTHER_MODEL]
+        model = st.selectbox("Model", model_ids, index=model_ids.index(MODEL),
+                             format_func=lambda m: "Other…" if m == OTHER_MODEL else MODELS.get(m, m),
+                             help="Models on the SCC KI-Toolbox. Pick Other… to type any model ID.")
+        other_model = st.text_input("Other model ID", placeholder="only used with Other…")
+        effort = st.selectbox("Reasoning effort", EFFORTS, index=EFFORTS.index(EFFORT) if EFFORT in EFFORTS else 0,
+                              help="Sent as reasoning_effort. \"default\" sends nothing; not every model supports it.")
         players = st.slider("Players", 2, MAX_PLAYERS, 6)
         max_rounds = st.number_input("Max rounds", 1, 50, 10)
         start_paused = st.checkbox("Start paused (step through calls)")
         submitted = st.form_submit_button("Start game", type="primary", disabled=active,
                                           width="stretch")
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        st.sidebar.warning("ANTHROPIC_API_KEY is not set. Calls will fail unless you're logged in with `ant auth login`.")
+    if not os.environ.get("KI_TOOLBOX_API_KEY"):
+        st.sidebar.warning("KI_TOOLBOX_API_KEY is not set, so every API call will fail.")
 
     if submitted:
-        game = Game(player_count=players, max_rounds=int(max_rounds), model=model.strip(),
+        if model == OTHER_MODEL:
+            model = other_model.strip() or MODEL
+        game = Game(player_count=players, max_rounds=int(max_rounds), model=model,
                     effort=effort, echo=False)
         if start_paused:
             game.pause()
@@ -197,8 +205,6 @@ def call_detail(call):
     st.caption(meta)
     if call.get("error"):
         st.error(call["error"])
-    if call.get("fallback"):
-        st.warning("The request was declined and answered by a fallback model.")
     parsed = call.get("parsed", {})
     if call["status"] == "ok" and parsed.get(call["action"]) is None:
         st.warning(f"No valid `{call['action']}()` command found in the response.")
@@ -213,7 +219,7 @@ def call_detail(call):
             st.markdown("**Parsed commands**")
             st.json(parsed)
         if call.get("thinking"):
-            with st.expander("Reasoning summary"):
+            with st.expander("Reasoning"):
                 st.write(call["thinking"])
 
 
@@ -257,11 +263,10 @@ def calls_tab(game):
         st.write("_No API calls yet._")
         return
     parse_failures = sum(c["status"] == "ok" and c.get("parsed", {}).get(c["action"]) is None for c in calls)
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3 = st.columns(3)
     c1.metric("Parse failures", parse_failures)
     c2.metric("Refusals", sum(c["status"] == "refused" for c in calls))
-    c3.metric("Fallbacks", sum(bool(c.get("fallback")) for c in calls))
-    c4.metric("Errors", sum(c["status"] == "error" for c in calls))
+    c3.metric("Errors", sum(c["status"] == "error" for c in calls))
     df = pd.DataFrame([{
         "id": c["id"], "round": c["round"], "turn": c["turn"], "player": f"#{c['participant']} {c['name']}",
         "action": c["action"], "status": c["status"],
@@ -304,7 +309,7 @@ game = st.session_state.get("game")
 
 if game is None:
     st.title("🦑 SquidGPT")
-    st.write("Claude-powered players are dropped into a 3x3 map of rooms. Each round some rooms are trapped, "
+    st.write("AI players are dropped into a 3x3 map of rooms. Each round some rooms are trapped, "
              "and each player only learns part of where. Players in the same room talk (and lie), then move. "
              "Whoever stands in a trapped room at the end of a round is eliminated.")
     st.write("Pick settings in the sidebar and press **Start game**.")
