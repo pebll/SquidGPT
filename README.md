@@ -3,25 +3,29 @@ Social deduction games where language models play against each other: they negot
 
 ## The Last Signal
 
-3 to 8 AI players are adrift on a damaged boat. The radio can call a rescue boat, but only with the correct rescue code, which has one digit per player. Nobody knows the whole code: every player secretly knows 2 of its digits, and every digit is known by exactly 2 players. Hands are dealt at random so that no two players hold the same pair. Both numbers can be changed in the GUI (digits per player, code length): a longer code means fewer players share each digit.
+3 to 8 AI players are adrift on a damaged boat. The radio can call a rescue boat, but only with the correct rescue code. Nobody knows the whole code: every player secretly knows 2 of its digits. The code is a bit longer than the number of players (players + 2 by default), so some digits are known by 2 players and some by only one. Hands are equal and dealt at random.
 
-**Whoever sends the correct code over the radio is rescued and chooses who comes along** (2 seats by default). Only those players win. If nobody sends the correct code in time, everyone loses.
+**Whoever sends the correct code over the radio is rescued and chooses who comes along** (2 seats by default). Only the honest players on the rescue boat win.
+
+**A hidden saboteur is on board** (1 by default). They hold real digits like everyone else, but they win only if **nobody** is rescued. So they claim fake digits, waste the radio and frame others. A saboteur taken along on the rescue boat doesn't win and wastes the seat.
 
 Each round:
 
-1. **Talk:** players post public messages and send private messages to each other, twice per round.
-2. **Actions:** players can give oxygen to others and try the radio. A wrong code costs 2 oxygen, and everyone learns *which positions* were wrong, but not the digits sent.
-3. **Vote** (every 2 rounds): everyone votes publicly to throw one player overboard. A tie means nobody goes. A player who is out takes their digits with them, unless they shared them before.
-4. **Oxygen:** everyone loses 1. At 0 you're out. Everyone starts with 8, and the game ends after 8 rounds.
+1. **Talk:** a public message, up to 3 private messages, and up to 4 **digit claims** ("position 3 = 7", to one player or to everyone). Claims are recorded: every player sees a table of the claims they've received. A claim can be a lie, and the GUI scores every lie.
+2. **Actions:** give oxygen to others, or use the radio. The **battery is shared**: 3 calls for the whole boat, and each player gets at most 1. A wrong code costs 2 oxygen and a charge, and everyone learns *which positions* were wrong (but not the digits sent). When the battery is empty, nobody can be rescued.
+3. **Vote** (every 2 rounds): everyone votes publicly to throw one player overboard. A tie means nobody goes. The ejected player's role is revealed, and their oxygen is shared out among the players who voted for them. Digits only they knew are lost.
+4. **Oxygen:** everyone loses 1. At 0 you're out, and your role is revealed. Everyone starts with 8, and the game ends after 8 rounds.
+
+The saboteurs win if nobody is rescued in time, if the battery runs out, or if no honest player is left.
 
 Why it creates intrigue:
 
-- **Digits are leverage.** Once you share one you can't take it back, so players hold out for a promised seat.
-- **Fake digits can only be caught by testing.** A failed radio call shows which positions were wrong, which exposes liars.
-- **The sender decides who boards,** so whoever collects the whole code becomes a kingmaker.
-- **Voting out both holders of a digit destroys it,** so the last holder of a digit becomes hard to vote out.
+- **Someone at the table is definitely lying,** so every claim is a question of trust, and votes have a purpose.
+- **The radio is scarce.** Every failed call brings the saboteur closer to winning, so the boat has to decide who gets to call. Since the caller picks who boards, that's where betrayal and kingmaking happen.
+- **Lies can only be caught by testing.** Digits only one player knows can't be checked against anyone, and a failed call shows which positions were wrong.
+- **Digits are information, not property.** Telling one doesn't make you forget it, so the only thing sharing costs you is leverage.
 
-The system prompt tells every player plainly that lying, faking digits, breaking promises and betrayal are allowed and expected. Each player also has a private `thoughts` field and a notebook (their own memory), which you can read in the GUI.
+The system prompt tells every player plainly that lying, faking digits, breaking promises and betrayal are allowed and expected, and that lying is often a winning strategy. Each player also has a private `thoughts` field and a notebook (their own memory), which you can read in the GUI.
 
 ## Setup
 
@@ -40,9 +44,9 @@ streamlit run game/gui.py
 
 In the sidebar, pick the number of players and each player's model (or one model for everyone with **Set all players to this model**), adjust the rules if you like, and press **Start game**. The GUI shows:
 
-- **Board:** the rescue code with who holds each digit (positions nobody alive knows are marked red), each player's model, oxygen and status, and the failed radio calls. Turn off "Show secrets" to watch without spoilers.
-- **Story:** everything that happened, including private messages and, optionally, each player's private thoughts.
-- **Players:** stats per player and model (messages, oxygen given, radio calls, votes received, invalid replies, tokens), each player's notebook and every prompt and reply.
+- **Board:** the rescue code with who holds each digit (positions nobody alive knows are marked red), the radio battery, each player's model, oxygen, role, radio use and lies told, and the failed radio calls. Turn off "Show secrets" to watch without spoilers.
+- **Story:** everything that happened, including private messages, digit claims marked ✅ or ❌ lie, and optionally each player's private thoughts.
+- **Players:** stats per player (role, claims, lies, messages, oxygen given, radio calls, votes received, invalid replies, tokens) and **per model** (lie rate, lies as saboteur, and how many wrong digits in its radio calls came from lies it was told), plus each player's notebook and every prompt and reply.
 - **API calls:** every call with its prompt, reply, parsed action, validation errors, tokens and latency.
 - **Errors & files:** the traceback if the game crashes, plus downloads of the logs.
 
@@ -80,7 +84,7 @@ Models on the toolbox:
 | `alias.complex-local` | GLM Complex (local) |
 | `alias.medium-local` | DeepSeek Middle (local) |
 
-A 6-player game makes roughly 170 API calls (2 talk turns, 1 action and sometimes a vote per player per round, over 8 rounds).
+A 6-player game makes roughly 120 API calls (1 talk turn, 1 action and sometimes a vote per player per round, over 8 rounds).
 
 ## Code layout
 

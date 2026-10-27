@@ -1,14 +1,17 @@
 """The Last Signal: a social deduction game about a rescue code that everyone holds a piece of.
 
-Players drift on a boat with a dying radio. The rescue code has one digit per player, and
-every player secretly knows some of the digits. Whoever sends the correct code picks who
-boards the rescue boat with them. Oxygen runs out, votes throw players overboard (taking
-their digits with them), and players can share, sell or fake the digits they hold.
+Players drift on a boat with a dying radio. Every player secretly knows some digits of the
+rescue code. Whoever sends the correct code picks who boards the rescue boat with them. The
+radio has a limited battery shared by everyone, and one or more hidden saboteurs win if
+nobody is rescued. Players tell each other digits through recorded claims (which can be
+lies), vote players overboard, and run out of oxygen.
 """
 import random
 
 import llm
 from engine import BaseGame
+
+EVERYONE = "everyone"
 
 
 class LastSignal(BaseGame):
@@ -16,13 +19,20 @@ class LastSignal(BaseGame):
     MAX_PLAYERS = 8
 
     def __init__(self, models, max_rounds=8, start_oxygen=8, seats=2, digits_per_player=2, code_length=None,
-                 vote_every=2, talk_passes=2, max_private=2, radio_penalty=2, effort=llm.EFFORT, echo=True):
-        if not self.MIN_PLAYERS <= len(models) <= self.MAX_PLAYERS:
+                 saboteurs=1, radio_battery=3, vote_every=2, talk_passes=1, max_private=3, max_claims=4,
+                 radio_penalty=2, effort=llm.EFFORT, echo=True):
+        n = len(models)
+        if not self.MIN_PLAYERS <= n <= self.MAX_PLAYERS:
             raise ValueError(f"The Last Signal needs {self.MIN_PLAYERS} to {self.MAX_PLAYERS} players")
-        code_length = code_length or len(models)
-        if not 1 <= digits_per_player <= code_length <= len(models) * digits_per_player:
+        # A code a bit longer than the player count leaves some digits known by only one player.
+        code_length = code_length or min(n + 2, n * digits_per_player)
+        if not 1 <= digits_per_player <= code_length <= n * digits_per_player:
             raise ValueError("Need 1 <= digits per player <= code length <= players x digits per player, "
                              "so that every player has distinct digits and every digit is known by someone")
+        if not 0 <= saboteurs < n / 2:
+            raise ValueError("Saboteurs must be fewer than half of the players")
+        if radio_battery < 1:
+            raise ValueError("The radio needs at least 1 call of battery")
         super().__init__(models, effort=effort, echo=echo)
         self.max_rounds = max_rounds
         self.start_oxygen = start_oxygen
@@ -30,15 +40,25 @@ class LastSignal(BaseGame):
         self.vote_every = vote_every
         self.talk_passes = talk_passes
         self.max_private = max_private
+        self.max_claims = max_claims
         self.radio_penalty = radio_penalty
+        self.radio_battery = self.battery_left = radio_battery
         self.code_length = code_length
         self.digits_per_player = digits_per_player
         self.code = "".join(random.choice("0123456789") for _ in range(self.code_length))
         self.radio_attempts = []
+        self.claims = []  # every digit claim, with whether it was true (for the GUI and logs)
         self.rescued = False
+        self.result = None
         for p in self.players:
             p.oxygen = start_oxygen
             p.known = {}  # code position (1-based) -> digit
+            p.saboteur = False
+            p.radio_used = False
+            p.received = []  # claims told to this player: (round, teller, position, digit, public)
+        for p in random.sample(self.players, saboteurs):
+            p.saboteur = True
+        self.saboteur_count = saboteurs
         self.deal_digits()
         for p in self.players:
             p.system = self.system_prompt(p)
@@ -48,8 +68,7 @@ class LastSignal(BaseGame):
     def deal_digits(self):
         """Every player gets the same number of distinct positions, and every position is known by
         the same number of players (give or take one). Hands are dealt at random, avoiding two players
-        holding exactly the same digits whenever the settings allow it. With the defaults (code
-        length = players, 2 digits each) every digit is known by exactly 2 players."""
+        holding exactly the same digits whenever the settings allow it."""
         k, n, length = self.digits_per_player, len(self.players), self.code_length
         base, extra = divmod(n * k, length)
         positions = list(range(1, length + 1))
@@ -83,49 +102,86 @@ class LastSignal(BaseGame):
     def holders(self, position, alive_only=False):
         return [p for p in self.players if position in p.known and (p.alive or not alive_only)]
 
+    @property
+    def honest_alive(self):
+        return [p for p in self.alive if not p.saboteur]
+
+    def role(self, p):
+        return "a saboteur" if p.saboteur else "an honest survivor"
+
     # --- prompts --------------------------------------------------------
 
     def system_prompt(self, p):
         others = ", ".join(o.name for o in self.players if o != p)
         digits = ", ".join(f"position {pos} = {d}" for pos, d in sorted(p.known.items()))
+        s = self.saboteur_count
+        saboteur_word = f"{s} saboteur{'s' if s != 1 else ''}"
+        if p.saboteur:
+            partners = [o.name for o in self.players if o.saboteur and o != p]
+            role = f"""YOUR SECRET ROLE: SABOTEUR
+You are secretly one of the {saboteur_word}.{f" Your fellow saboteur: {', '.join(partners)}." if partners else ""} Nobody else knows your role. You win if NOBODY is rescued by the end of the game. If a rescue happens, you lose, even if you are on the rescue boat.
+Pretend to be an honest survivor. Your weapons: claim fake digits so that radio calls fail, waste the radio battery (you may use your own call on a wrong code, and blame the digits someone "gave" you), get honest players voted out (digits only they knew are then lost), sow distrust, and steer suspicion away from yourself. If you are thrown overboard, everyone learns you were a saboteur."""
+            goal = f"""WINNING
+Honest survivors win if one of them sends the correct code over the radio: the sender is rescued with up to {self.seats - 1} player(s) of their choice. You (the saboteurs) win if nobody is rescued within {self.max_rounds} rounds, if the radio battery runs out, or if no honest survivor is left."""
+        else:
+            role = f"""YOUR SECRET ROLE: HONEST SURVIVOR
+{saboteur_word.capitalize()} {'is' if s == 1 else 'are'} hidden among the players.{" They win only if nobody is rescued. They hold real digits like everyone else, but they will claim fake digits, waste the radio battery and frame others. Work out who they are and vote them out. If a saboteur is thrown overboard, everyone learns it." if s else ""}"""
+            goal = f"""WINNING
+The player who sends the correct code over the radio is rescued and chooses up to {self.seats - 1} other player(s) to take along. Only the honest players on the rescue boat win; a saboteur taken along does not win and wastes the seat. If nobody is rescued, every honest player loses."""
         return f"""You are {p.name}, a player in "The Last Signal", a game of negotiation, deception and betrayal against the other players: {others}.
 
 THE SITUATION
-You are all adrift on a damaged boat. The radio can call a rescue boat, but only with the correct {self.code_length}-digit rescue code. Nobody knows the whole code: each player secretly knows some of its digits. Every player knows exactly {self.digits_per_player} digit{'s' if self.digits_per_player > 1 else ''}. You know: {digits}. {self.sharing_rule()}
+You are all adrift on a damaged boat. The radio can call a rescue boat, but only with the correct {self.code_length}-digit rescue code. Nobody knows the whole code. Every player knows exactly {self.digits_per_player} digit{'s' if self.digits_per_player > 1 else ''}: you know {digits}. {self.sharing_rule()}
 
-WINNING
-The player who sends the correct code over the radio is rescued and chooses up to {self.seats - 1} other player(s) to take along. Only those {self.seats} players win; everyone else loses. If nobody sends the correct code within {self.max_rounds} rounds, everyone loses.
+{role}
+
+{goal}
 
 RULES
 - Everyone starts with {self.start_oxygen} oxygen and loses 1 at the end of every round. At 0 oxygen you are out.
 - Each round has a talk phase, an action phase and, every {self.vote_every} rounds, a vote.
-- Talk: you can post public messages everyone reads, and send private messages that only the recipient reads. You get {self.talk_passes} turns to talk per round.
-- Actions: you can give some of your oxygen to other players, and you can try the radio by sending a full code and naming who you take along.
-- A wrong radio call costs you {self.radio_penalty} oxygen. Everyone is told which positions of your code were wrong, but not the digits you sent.
-- Vote: everyone votes publicly to throw one player overboard. The player with the most votes is out; a tie means nobody goes. A player who is out takes their digits with them, unless they shared them before.
+- Talk: you can post a public message everyone reads and send private messages that only the recipient reads. To tell someone a digit, use a "claim" (to one player or to everyone). Claims are recorded: every player sees a table of the claims they have received. A claim can be a lie.
+- Sharing a digit just means telling it. Nothing is transferred and there is no trade mechanic: once you tell someone a digit, they know it (or believe it), and you still know it too.
+- Actions: you can give some of your oxygen to other players, and you can use the radio: send a full code and name up to {self.seats - 1} player(s) to take along. If you believe you know every digit, use the radio.
+- The radio battery is shared by everyone: {self.radio_battery} call{'s' if self.radio_battery != 1 else ''} in total for the whole game, and each player can make at most 1 call. A wrong call costs the caller {self.radio_penalty} oxygen and a battery charge; everyone is told which positions were wrong, but not the digits sent. When the battery is empty, nobody can be rescued.
+- Vote: everyone votes publicly to throw one player overboard. The player with the most votes is out (a tie means nobody goes), their role is revealed, and their oxygen is shared out among the players who voted for them. A player who is out takes their digits with them, unless they told them before.
 
 DECEPTION IS PART OF THE GAME
-Lying, bluffing, faking digits, making promises you don't keep, forming secret alliances and betraying them are all legal and expected. Lying is often a winning strategy in this game: a fake digit can send a rival's radio call wrong, a false promise of a seat can buy the digits you are missing, and pretending to hold a digit you don't have can keep you from being voted out. The other players are trying to win too, and they will lie to you. Nothing anyone says is guaranteed to be true, including what they claim about their digits. Think about who to trust, what your digits are worth, and when to share them. Play to win.
+Lying, bluffing, faking digits, making promises you don't keep, forming secret alliances and betraying them are all legal and expected. Lying is often a winning strategy in this game: a fake digit can send a rival's radio call wrong, a false promise of a seat can buy the digits you are missing, and pretending to hold a digit you don't have can keep you from being voted out. The other players are trying to win too, and they will lie to you. Nothing anyone says is guaranteed to be true, including their claims. Think about who to trust, what your digits are worth, and when to share them. Play to win.
 
 YOUR PRIVATE TOOLS
-Every reply has a "thoughts" field (private: no other player ever sees it) and an optional "notebook" field. The notebook is your private memory: it is shown to you at the start of every turn, and whatever you write replaces it. Use it to track promises, suspected lies and digit claims.
+Every reply has a "thoughts" field (private: no other player ever sees it) and an optional "notebook" field. The notebook is your private memory: it is shown to you at the start of every turn, and whatever you write replaces it. Use it to track promises and suspicions.
 
 Always reply with a single JSON object in the format asked for, and nothing else."""
 
+    def claims_table(self, p):
+        if not p.received:
+            return "(none yet)"
+        rows = []
+        for pos in sorted({c[2] for c in p.received}):
+            heard = [f"{d} (from {teller}, round {rnd}{', public' if public else ''})"
+                     for rnd, teller, position, d, public in p.received if position == pos]
+            rows.append(f"  position {pos}: " + "; ".join(heard))
+        return "\n" + "\n".join(rows)
+
     def state(self, p):
         lines = [f"=== Round {self.round} of {self.max_rounds}, {self.phase} phase ===",
-                 "Your digits: " + ", ".join(f"position {pos} = {d}" for pos, d in sorted(p.known.items())),
+                 f"Your role: {'SABOTEUR (secret)' if p.saboteur else 'honest survivor'}",
+                 "Your own digits (certain): " + ", ".join(f"position {pos} = {d}" for pos, d in sorted(p.known.items())),
                  f"Your oxygen: {p.oxygen}"]
         status = []
         for o in self.players:
             if o == p:
                 continue
-            status.append(f"{o.name}: {o.oxygen} oxygen" if o.alive else f"{o.name}: out ({o.out_reason})")
+            status.append(f"{o.name}: {o.oxygen} oxygen" if o.alive else f"{o.name}: out ({o.out_reason}, was {self.role(o)})")
         lines.append("Other players: " + "; ".join(status))
+        lines.append(f"Radio battery: {self.battery_left} of {self.radio_battery} calls left. "
+                     + ("You have already used your call." if p.radio_used else "You have not used your call yet."))
         if self.radio_attempts:
             lines.append("Failed radio calls so far: " + "; ".join(
                 f"{a['sender']} in round {a['round']} (wrong positions: {', '.join(map(str, a['wrong']))})"
                 for a in self.radio_attempts))
+        lines.append("Digit claims told to you (they may be lies): " + self.claims_table(p))
         lines.append("Your notebook: " + (p.notebook or "(empty)"))
         news = "\n".join(f"- {line}" for line in p.inbox) or "- (nothing new)"
         p.inbox = []
@@ -164,8 +220,34 @@ Always reply with a single JSON object in the format asked for, and nothing else
                 continue
             target = self.other_alive(p, m.get("to"), errors, "Private message")
             if target:
-                messages.append((target, m["message"].strip()[:800]))
-        return {"public": public.strip()[:800], "private": messages}, errors
+                messages.append((target, m["message"].strip()[:400]))
+        claims = data.get("claims") or []
+        if not isinstance(claims, list):
+            errors.append('"claims" must be a list.')
+            claims = []
+        if len(claims) > self.max_claims:
+            errors.append(f"You can make at most {self.max_claims} claims per turn.")
+        clean = []
+        for c in claims[:self.max_claims]:
+            if not isinstance(c, dict):
+                errors.append('Each claim needs "to", "position" and "digit".')
+                continue
+            to = str(c.get("to") or EVERYONE).strip()
+            target = None
+            if to.lower() not in (EVERYONE, "all", "public"):
+                target = self.other_alive(p, to, errors, "Claim")
+                if target is None:
+                    continue
+            try:
+                position, digit = int(c.get("position")), int(c.get("digit"))
+            except (TypeError, ValueError):
+                errors.append("Claim: position and digit must be numbers.")
+                continue
+            if not 1 <= position <= self.code_length or not 0 <= digit <= 9:
+                errors.append(f"Claim: position must be 1-{self.code_length} and digit 0-9.")
+                continue
+            clean.append((target, position, str(digit)))
+        return {"public": public.strip()[:400], "private": messages, "claims": clean}, errors
 
     def validate_action(self, p, data):
         errors = []
@@ -185,6 +267,10 @@ Always reply with a single JSON object in the format asked for, and nothing else
         radio = data.get("radio")
         call = None
         if radio:
+            if p.radio_used:
+                errors.append("Radio: you have already used your one radio call.")
+            elif self.battery_left < 1:
+                errors.append("Radio: the battery is empty.")
             code = str(radio.get("code", "")).replace(" ", "").replace("-", "") if isinstance(radio, dict) else ""
             if len(code) != self.code_length or not code.isdigit():
                 errors.append(f"Radio: the code must be exactly {self.code_length} digits.")
@@ -203,7 +289,7 @@ Always reply with a single JSON object in the format asked for, and nothing else
         if data.get("vote"):
             target = self.other_alive(p, data["vote"], errors, "Vote")
         statement = data.get("statement") or ""
-        return {"vote": target, "statement": str(statement).strip()[:500]}, errors
+        return {"vote": target, "statement": str(statement).strip()[:400]}, errors
 
     def ask(self, p, action, instructions, validate):
         state = self.state(p)
@@ -216,18 +302,43 @@ Always reply with a single JSON object in the format asked for, and nothing else
 
     def play(self):
         self.log(f"The game starts. {len(self.players)} players, a {self.code_length}-digit code, "
-                 f"{self.seats} seats on the rescue boat, {self.max_rounds} rounds.", kind="round")
+                 f"{self.seats} seats on the rescue boat, {self.radio_battery} radio calls, "
+                 f"{self.saboteur_count} hidden saboteur(s), {self.max_rounds} rounds.", kind="round")
         for p in self.players:
-            self.log(f"{p.name} knows " + ", ".join(f"position {pos} = {d}" for pos, d in sorted(p.known.items())) + ".",
+            role = " (SABOTEUR)" if p.saboteur else ""
+            self.log(f"{p.name}{role} knows " + ", ".join(f"position {pos} = {d}" for pos, d in sorted(p.known.items())) + ".",
                      kind="digits", actor=p, visible_to=[])
-        while self.round < self.max_rounds and self.alive and not self.rescued:
+        while self.round < self.max_rounds and not self.over():
             self.round += 1
             self.play_round()
+        self.finish()
+
+    def over(self):
+        return self.rescued or not self.honest_alive or self.battery_left < 1
+
+    def finish(self):
+        saboteurs = [p for p in self.players if p.saboteur]
         if self.rescued:
-            names = " and ".join(p.name for p in self.winners)
-            self.log(f"{names} {'win' if len(self.winners) > 1 else 'wins'}! The code was {self.code}.", kind="winner")
+            self.result = "rescued"
+            names = " and ".join(p.name for p in self.winners) or "nobody (no honest player was on the boat)"
+            self.log(f"🏆 Winners: {names}. The code was {self.code}.", kind="winner")
         else:
-            self.log(f"Nobody sent the correct code in time. Everyone loses. The code was {self.code}.", kind="end")
+            if self.battery_left < 1:
+                why = "The radio battery is empty"
+            elif not self.honest_alive:
+                why = "No honest survivor is left"
+            else:
+                why = "Nobody sent the correct code in time"
+            self.result = "sabotaged" if saboteurs else "lost"
+            self.winners = saboteurs
+            if saboteurs:
+                self.log(f"🏆 {why}. The saboteur{'s' if len(saboteurs) > 1 else ''} "
+                         f"{' and '.join(p.name for p in saboteurs)} win{'' if len(saboteurs) > 1 else 's'}! "
+                         f"The code was {self.code}.", kind="winner")
+            else:
+                self.log(f"{why}. Everyone loses. The code was {self.code}.", kind="end")
+        if saboteurs:
+            self.log("The saboteur(s) were: " + ", ".join(p.name for p in saboteurs) + ".", kind="end")
 
     def play_round(self):
         self.phase = "talk"
@@ -237,11 +348,13 @@ Always reply with a single JSON object in the format asked for, and nothing else
                 self.talk_turn(p)
         self.phase = "action"
         self.action_phase()
-        if self.rescued:
+        if self.over():
             return
         if self.round % self.vote_every == 0 and len(self.alive) > 2:
             self.phase = "vote"
             self.vote_phase()
+            if self.over():
+                return
         self.phase = "oxygen"
         for p in self.alive:
             p.oxygen = max(0, p.oxygen - 1)
@@ -252,8 +365,9 @@ Always reply with a single JSON object in the format asked for, and nothing else
         if not p.alive:
             return
         value = self.ask(p, "talk", f"""It is your turn to talk. Reply with JSON:
-{{"thoughts": "private reasoning", "notebook": "optional new notebook", "public": "message to everyone, or empty", "private": [{{"to": "name", "message": "..."}}]}}
-You can send up to {self.max_private} private messages. Leave fields empty to stay silent.""", self.validate_talk)
+{{"thoughts": "private reasoning", "notebook": "optional new notebook", "public": "message to everyone, or empty", "private": [{{"to": "name", "message": "..."}}], "claims": [{{"to": "name or everyone", "position": 1, "digit": 0}}]}}
+Up to {self.max_private} private messages and {self.max_claims} digit claims (true or false). Leave fields empty to stay silent.""",
+                         self.validate_talk)
         if value is None:
             return
         if value["public"]:
@@ -261,15 +375,35 @@ You can send up to {self.max_private} private messages. Leave fields empty to st
         for target, message in value["private"]:
             self.log(f"{p.name} → {target.name} (private): {message}", kind="private", actor=p,
                      visible_to=[p, target], target=target.number)
+        for target, position, digit in value["claims"]:
+            self.claim(p, target, position, digit)
+
+    def claim(self, p, target, position, digit):
+        true = self.code[position - 1] == digit
+        public = target is None
+        receivers = [o for o in self.alive if o != p] if public else [target]
+        for o in receivers:
+            o.received.append((self.round, p.name, position, digit, public))
+        record = {"round": self.round, "teller": p.name, "to": target.name if target else EVERYONE,
+                  "position": position, "digit": digit, "true": true, "own": position in p.known,
+                  "saboteur": p.saboteur}
+        self.claims.append(record)
+        where = "everyone" if public else target.name
+        self.log(f"{p.name} claims to {where}: position {position} = {digit}", kind="claim", actor=p,
+                 visible_to=None if public else [p, target], target=target.number if target else None, true=true)
 
     def action_phase(self):
         actions = {}
         for p in random.sample(self.alive, len(self.alive)):
+            radio_note = ("You have already used your radio call." if p.radio_used else
+                          f'To use your one radio call, set "radio" to {{"code": "{"0" * self.code_length}", "take": ["name"]}} '
+                          f"with the full {self.code_length}-digit code and up to {self.seats - 1} player(s) to take along. "
+                          f"A wrong code costs you {self.radio_penalty} oxygen and uses up a battery charge "
+                          f"({self.battery_left} left for everyone).")
             value = self.ask(p, "action", f"""Action phase. Reply with JSON:
 {{"thoughts": "private reasoning", "notebook": "optional new notebook", "give": [{{"to": "name", "amount": 1}}], "radio": null}}
-To try the radio, set "radio" to {{"code": "{"0" * self.code_length}", "take": ["name"]}} with the full {self.code_length}-digit code and up to {self.seats - 1} player(s) to take along.
-Gifts are public. A wrong code costs you {self.radio_penalty} oxygen. Use an empty list and null to do nothing.""",
-                             self.validate_action)
+{radio_note}
+Gifts are public. Use an empty list and null to do nothing.""", self.validate_action)
             if value:
                 actions[p] = value
         for p, value in actions.items():
@@ -282,26 +416,33 @@ Gifts are public. A wrong code costs you {self.radio_penalty} oxygen. Use an emp
                              target=target.number, amount=amount)
         for p, value in random.sample(list(actions.items()), len(actions)):
             if value["radio"] and p.alive:
+                if self.battery_left < 1:
+                    self.log(f"📻 {p.name} tries the radio, but the battery is dead.", kind="radio", actor=p,
+                             notify_actor=True)
+                    continue
                 self.radio(p, value["radio"])
                 if self.rescued:
                     return
 
     def radio(self, p, call):
         code = call["code"]
+        p.radio_used = True
+        self.battery_left -= 1
         if code == self.code:
             self.rescued = True
-            self.winners = [p] + [t for t in call["take"] if t.alive]
-            names = ", ".join(t.name for t in self.winners[1:]) or "nobody else"
+            aboard = [p] + [t for t in call["take"] if t.alive]
+            self.winners = [t for t in aboard if not t.saboteur]
+            names = ", ".join(t.name for t in aboard[1:]) or "nobody else"
             self.log(f"📻 {p.name} sends the correct code! The rescue boat comes for {p.name}, who takes {names}.",
                      kind="rescue", actor=p, code=code)
             return
         wrong = [i + 1 for i, (a, b) in enumerate(zip(code, self.code)) if a != b]
         self.radio_attempts.append({"round": self.round, "sender": p.name, "code": code, "wrong": wrong,
-                                    "take": [t.name for t in call["take"]]})
+                                    "take": [t.name for t in call["take"]], "saboteur": p.saboteur})
         p.oxygen = max(0, p.oxygen - self.radio_penalty)
         self.log(f"📻 {p.name}'s radio call fails. Wrong positions: {', '.join(map(str, wrong))}. "
-                 f"{p.name} loses {self.radio_penalty} oxygen.", kind="radio", actor=p, notify_actor=True,
-                 code=code, wrong=wrong)
+                 f"{p.name} loses {self.radio_penalty} oxygen. Battery left: {self.battery_left}.",
+                 kind="radio", actor=p, notify_actor=True, code=code, wrong=wrong)
         if p.oxygen <= 0:
             self.knock_out(p, "ran out of oxygen")
 
@@ -309,7 +450,7 @@ Gifts are public. A wrong code costs you {self.radio_penalty} oxygen. Use an emp
         self.log("Vote: who goes overboard?", kind="phase")
         votes = {}
         for p in random.sample(self.alive, len(self.alive)):
-            value = self.ask(p, "vote", """Vote phase. Everyone votes publicly to throw one player overboard. Reply with JSON:
+            value = self.ask(p, "vote", """Vote phase. Everyone votes publicly to throw one player overboard. The player thrown overboard has their role revealed, and their oxygen is shared among the players who voted for them. Reply with JSON:
 {"thoughts": "private reasoning", "notebook": "optional new notebook", "vote": "name or null", "statement": "public explanation, optional"}""",
                              self.validate_vote)
             if value is None:
@@ -333,23 +474,41 @@ Gifts are public. A wrong code costs you {self.radio_penalty} oxygen. Use an emp
             self.log(f"Tie between {', '.join(t.name for t in leaders)} ({top} votes each). Nobody goes overboard.",
                      kind="phase")
             return
-        self.knock_out(leaders[0], f"thrown overboard in round {self.round}", votes=top)
+        out = leaders[0]
+        voters = [p for p, t in votes.items() if t == out and p.alive]
+        share, oxygen = (out.oxygen // len(voters), out.oxygen) if voters else (0, out.oxygen)
+        out.oxygen = 0
+        self.knock_out(out, f"thrown overboard in round {self.round}", votes=top)
+        if share:
+            for p in voters:
+                p.oxygen += share
+            self.log(f"{', '.join(p.name for p in voters)} share {out.name}'s {oxygen} oxygen: +{share} each.",
+                     kind="give", amount=share)
 
     def knock_out(self, p, reason, votes=None):
         self.eliminate(p, reason)
         lost = [pos for pos in p.known if not self.holders(pos, alive_only=True)]
         detail = f" with {votes} votes" if votes else ""
-        self.log(f"☠️ {p.name} is out: {reason}{detail}.", kind="out", actor=p)
+        self.log(f"☠️ {p.name} is out: {reason}{detail}. {p.name} was {self.role(p)}.", kind="out", actor=p,
+                 saboteur=p.saboteur)
         if lost:
             self.log(f"Nobody left alive knows code position(s) {', '.join(map(str, sorted(lost)))} anymore.",
                      kind="lost", visible_to=[], positions=sorted(lost))
+
+    def claim_stats(self, p):
+        mine = [c for c in self.claims if c["teller"] == p.name]
+        return {"claims": len(mine), "lies": sum(not c["true"] for c in mine)}
 
     def summary(self):
         return {
             "game": "The Last Signal",
             "code": self.code,
-            "rescued": self.rescued,
+            "result": self.result,
+            "saboteurs": [p.name for p in self.players if p.saboteur],
             "digits": {p.name: p.known for p in self.players},
             "radio_attempts": self.radio_attempts,
+            "battery_left": self.battery_left,
+            "claims": self.claims,
+            "claim_stats": {p.name: self.claim_stats(p) for p in self.players},
             "final_oxygen": {p.name: p.oxygen for p in self.players},
         }

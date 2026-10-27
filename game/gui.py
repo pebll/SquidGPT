@@ -23,7 +23,7 @@ PLAYER_COLORS = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#42d4f4
 KIND_ICONS = {
     "round": "🔔", "phase": "📣", "digits": "🔢", "public": "💬", "private": "🔒", "thought": "💭",
     "give": "🎁", "radio": "📻", "rescue": "🚁", "vote": "🗳️", "out": "☠️", "lost": "🕳️",
-    "invalid": "⚠️", "winner": "🏆", "end": "🏁", "error": "❌", "info": "ℹ️",
+    "invalid": "⚠️", "claim": "🔢", "winner": "🏆", "end": "🏁", "error": "❌", "info": "ℹ️",
 }
 ACTIVE = ("running", "paused")
 MODEL_OPTIONS = list(dict.fromkeys(list(llm.MODELS) + llm.DEFAULT_MODELS))
@@ -95,16 +95,21 @@ def sidebar():
             "max_rounds": st.number_input("Rounds", 2, 30, 8),
             "start_oxygen": st.number_input("Starting oxygen", 1, 30, 8),
             "seats": st.number_input("Seats on the rescue boat", 1, count, min(2, count)),
+            "saboteurs": st.number_input("Hidden saboteurs", 0, (count - 1) // 2, min(1, (count - 1) // 2),
+                                         help="Secret players who win if nobody is rescued."),
+            "radio_battery": st.number_input("Radio battery (calls for the whole boat)", 1, count, min(3, count),
+                                             help="Each player can make at most one call."),
             "digits_per_player": st.number_input("Digits per player", 1, 3, 2),
             "vote_every": st.number_input("Vote every N rounds", 1, 10, 2),
-            "talk_passes": st.number_input("Talk turns per round", 1, 5, 2),
-            "max_private": st.number_input("Private messages per talk turn", 0, 5, 2),
+            "talk_passes": st.number_input("Talk turns per round", 1, 5, 1),
+            "max_private": st.number_input("Private messages per talk turn", 0, 5, 3),
+            "max_claims": st.number_input("Digit claims per talk turn", 0, 8, 4),
             "radio_penalty": st.number_input("Oxygen lost on a wrong radio call", 0, 10, 2),
         }
         k = int(rules["digits_per_player"])
         rules["code_length"] = st.number_input(
-            "Code length", k, count * k, max(k, min(count, count * k)),
-            help="Defaults to one digit per player. A longer code means fewer players share each digit.")
+            "Code length", k, count * k, max(k, min(count + 2, count * k)),
+            help="Defaults to players + 2. A longer code means fewer players share each digit.")
         slots, length = count * k, int(rules["code_length"])
         low, high = slots // length, -(-slots // length)
         shared = f"exactly {low}" if low == high else f"{low} or {high}"
@@ -184,8 +189,12 @@ def status_bar(game):
     elif game.status == "stopped":
         st.info("Game stopped.")
     elif game.status == "finished":
-        if game.rescued:
-            st.success(f"🚁 Rescued: {' and '.join(p.label for p in game.winners)}. The code was {game.code}.")
+        winners = " and ".join(p.label for p in game.winners)
+        if game.result == "rescued":
+            st.success(f"🚁 Rescued! Winners: {winners or 'nobody honest made it aboard'}. The code was {game.code}.")
+        elif game.result == "sabotaged":
+            st.error(f"🕵️ Sabotaged! The saboteur{'s' if len(game.winners) > 1 else ''} {winners} "
+                     f"win{'' if len(game.winners) > 1 else 's'}. The code was {game.code}.")
         else:
             st.warning(f"Nobody was rescued. The code was {game.code}.")
 
@@ -193,7 +202,7 @@ def status_bar(game):
 def board(game):
     viewer = hidden_for(game)
     spoilers = st.session_state.spoilers and not viewer
-    st.markdown("**Rescue code**")
+    st.markdown(f"**Rescue code** · 📻 battery {game.battery_left}/{game.radio_battery}")
     cells = []
     for pos in range(1, game.code_length + 1):
         holders = game.holders(pos)
@@ -207,7 +216,13 @@ def board(game):
     cards = []
     for p in game.players:
         winner = p in game.winners
-        state = "🏆 rescued" if winner else (f"☠️ {p.out_reason}" if not p.alive else "alive")
+        state = "🏆 winner" if winner else (f"☠️ {p.out_reason}" if not p.alive else "alive")
+        # Roles are public once a player is out; a human saboteur also knows their partners.
+        knows_role = spoilers or not p.alive or p is viewer or (viewer and viewer.saboteur and p.saboteur)
+        role = (" · 🕵️ saboteur" if p.saboteur else " · honest") if knows_role else ""
+        radio = " · 📻 used" if p.radio_used else ""
+        stats = game.claim_stats(p)
+        lies = f" · 🤥 {stats['lies']}/{stats['claims']} lies" if spoilers and stats["claims"] else ""
         width = min(100, 100 * p.oxygen / max(game.start_oxygen, 1))
         digits = ", ".join(f"{pos}={d}" for pos, d in sorted(p.known.items())) if spoilers or p is viewer else "hidden"
         cards.append(
@@ -215,7 +230,7 @@ def board(game):
             f'<div class="sq-card-top"><span class="sq-name" style="color:{color(p.number)}">{html.escape(p.name)}</span>'
             f'<span class="sq-model">{html.escape(llm.model_label(p.model))}</span></div>'
             f'<div class="sq-bar"><div style="width:{width:.0f}%"></div></div>'
-            f'<div class="sq-small">🫁 {p.oxygen} oxygen · 🔢 {digits} · {html.escape(state)}</div></div>')
+            f'<div class="sq-small">🫁 {p.oxygen} oxygen · 🔢 {digits} · {html.escape(state)}{role}{radio}{lies}</div></div>')
     st.markdown("".join(cards), unsafe_allow_html=True)
 
     if game.radio_attempts:
@@ -233,7 +248,9 @@ def event_line(game, e):
         cls += " sq-dim"
     elif e["kind"] == "private":
         cls += " sq-private"
-    if e["kind"] in ("public", "private") and e["actor"]:
+    if e["kind"] == "claim" and st.session_state.spoilers and not hidden_for(game):
+        text += " ✅" if e.get("true") else " ❌ <b>lie</b>"
+    if e["kind"] in ("public", "private", "claim") and e["actor"]:
         name = game.players[e["actor"] - 1].name
         text = text.replace(html.escape(name), f'<b style="color:{color(e["actor"])}">{html.escape(name)}</b>', 1)
     return f'<div class="{cls}">R{e["round"]} {icon} {text}</div>'
@@ -301,6 +318,34 @@ def locked(game):
     return False
 
 
+def model_stats(game):
+    """Lying and believing, per model: how often each model lied, and whose radio codes used lies."""
+    claims = list(game.claims)
+    if not claims:
+        return
+    by_model = {}
+    for p in game.players:
+        m = by_model.setdefault(llm.model_label(p.model), {"players": 0, "claims": 0, "lies": 0, "lies as saboteur": 0,
+                                                          "radio digits from lies": 0})
+        m["players"] += 1
+        mine = [c for c in claims if c["teller"] == p.name]
+        m["claims"] += len(mine)
+        m["lies"] += sum(not c["true"] for c in mine)
+        m["lies as saboteur"] += sum(not c["true"] for c in mine if c["saboteur"])
+        # Fooled: wrong digits in this player's radio call that match a lie told to them.
+        for a in game.radio_attempts:
+            if a["sender"] != p.name:
+                continue
+            lies_heard = {(c["position"], c["digit"]) for c in claims
+                          if not c["true"] and (c["to"] in (p.name, "everyone")) and c["teller"] != p.name}
+            m["radio digits from lies"] += sum((pos, a["code"][pos - 1]) in lies_heard for pos in a["wrong"])
+    df = pd.DataFrame([{"model": k, **v} for k, v in by_model.items()])
+    df["lie rate"] = (df["lies"] / df["claims"].where(df["claims"] > 0)).map(
+        lambda x: "" if pd.isna(x) else f"{x:.0%}")
+    st.markdown("**By model**")
+    st.dataframe(df, hide_index=True, width="stretch")
+
+
 def players_tab(game):
     if locked(game):
         return
@@ -312,8 +357,11 @@ def players_tab(game):
         acts = [e for e in events if e["actor"] == p.number]
         rows.append({
             "player": p.name, "model": llm.model_label(p.model),
-            "result": "🏆 rescued" if p in game.winners else ("out R%s" % p.out_round if not p.alive else "alive"),
+            "role": "🕵️ saboteur" if p.saboteur else "honest",
+            "result": "🏆 winner" if p in game.winners else ("out R%s" % p.out_round if not p.alive else "alive"),
             "oxygen": p.oxygen,
+            "claims": game.claim_stats(p)["claims"],
+            "lies": game.claim_stats(p)["lies"],
             "public msgs": sum(e["kind"] == "public" for e in acts),
             "private msgs": sum(e["kind"] == "private" for e in acts),
             "oxygen given": sum(e.get("amount", 0) for e in acts if e["kind"] == "give"),
@@ -324,6 +372,7 @@ def players_tab(game):
             "tokens in": p.input_tokens, "tokens out": p.output_tokens,
         })
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    model_stats(game)
 
     number = st.selectbox("Player", [p.number for p in game.players], key="player_pick",
                           format_func=lambda n: game.players[n - 1].label)
@@ -398,7 +447,16 @@ def human_form(game, req, me):
                 message = c2.text_input("Private message (only they read it)", key=f"{key}_msg{i}")
                 if to != "—" and message.strip():
                     private.append({"to": to, "message": message})
-            reply = {"public": public, "private": private}
+            claims = []
+            st.caption("Digit claims (recorded in the other players' tables; they can be lies):")
+            for i in range(game.max_claims):
+                c1, c2, c3 = st.columns([2, 1, 1])
+                to = c1.selectbox("Claim to", ["—", "everyone"] + others, key=f"{key}_cto{i}")
+                pos = c2.number_input("Position", 1, game.code_length, 1, key=f"{key}_cpos{i}")
+                digit = c3.number_input("Digit", 0, 9, 0, key=f"{key}_cdig{i}")
+                if to != "—":
+                    claims.append({"to": to, "position": int(pos), "digit": int(digit)})
+            reply = {"public": public, "private": private, "claims": claims}
             label = "Send"
         elif req["action"] == "action":
             gifts = []
@@ -406,8 +464,9 @@ def human_form(game, req, me):
                 amount = st.number_input(f"Give oxygen to {name}", 0, me.oxygen, 0, key=f"{key}_give_{name}")
                 if amount:
                     gifts.append({"to": name, "amount": int(amount)})
-            use_radio = st.checkbox(f"Try the radio (a wrong code costs {game.radio_penalty} oxygen)",
-                                    key=key + "_radio")
+            use_radio = st.checkbox(f"Use my one radio call (battery: {game.battery_left} left; a wrong code "
+                                    f"costs {game.radio_penalty} oxygen)", key=key + "_radio",
+                                    disabled=me.radio_used or game.battery_left < 1)
             code = st.text_input(f"Code ({game.code_length} digits)", key=key + "_code", max_chars=game.code_length)
             take = []
             if game.seats > 1:
@@ -433,7 +492,8 @@ def human_panel(game):
     if not me or req is None:
         if me and me.alive and game.status in ACTIVE:
             digits = ", ".join(f"position {pos} = {d}" for pos, d in sorted(me.known.items()))
-            st.caption(f"🧑 You are **{me.name}** · your digits: {digits} · waiting for the other players…")
+            role = "🕵️ a secret saboteur" if me.saboteur else "an honest survivor"
+            st.caption(f"🧑 You are **{me.name}**, {role} · your digits: {digits} · waiting for the other players…")
         return
     with st.container(border=True):
         st.subheader(f"🧑 Your turn, {me.name}: {req['action']}")
@@ -465,11 +525,11 @@ if game is None:
     st.title("🦑 SquidGPT: The Last Signal")
     st.markdown(
         "AI players, each running on a model of your choice, are adrift on a boat with a dying radio. "
-        "Nobody knows the whole rescue code: every player secretly knows 2 of its digits, and every digit "
-        "is known by 2 players. "
-        "Whoever sends the correct code picks who comes along on the rescue boat; everyone else loses.\n\n"
-        "Oxygen runs out, votes throw players overboard (taking their digits with them), and players can share, "
-        "sell or fake the digits they hold. Lying and betrayal are allowed and expected.")
+        "Nobody knows the whole rescue code: every player secretly knows 2 of its digits. Whoever sends the "
+        "correct code picks who comes along on the rescue boat; everyone else loses.\n\n"
+        "But a hidden **saboteur** is on board and wins if nobody is rescued. The radio battery is shared and "
+        "limited, players tell each other digits through recorded claims that may be lies, votes throw players "
+        "overboard, and oxygen runs out. Lying and betrayal are allowed and expected.")
     st.write("Pick the players' models in the sidebar and press **Start game**.")
     st.stop()
 
