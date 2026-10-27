@@ -27,6 +27,7 @@ KIND_ICONS = {
 }
 ACTIVE = ("running", "paused")
 MODEL_OPTIONS = list(dict.fromkeys(list(llm.MODELS) + llm.DEFAULT_MODELS))
+SEAT_OPTIONS = MODEL_OPTIONS + [llm.HUMAN]
 
 st.markdown("""
 <style>
@@ -86,8 +87,9 @@ def sidebar():
             key = f"model_{i}"
             if key not in st.session_state:
                 st.session_state[key] = llm.DEFAULT_MODELS[i % len(llm.DEFAULT_MODELS)]
-            models.append(st.selectbox(LastSignal.PLAYER_NAMES[i], MODEL_OPTIONS, key=key, format_func=llm.model_label))
-        st.caption("Add other model IDs with the SQUIDGPT_MODELS environment variable.")
+            models.append(st.selectbox(LastSignal.PLAYER_NAMES[i], SEAT_OPTIONS, key=key, format_func=llm.model_label))
+        st.caption("Pick \"🧑 You (human)\" for one seat to play yourself. "
+                   "Add other model IDs with the SQUIDGPT_MODELS environment variable.")
     with st.sidebar.expander("Rules"):
         rules = {
             "max_rounds": st.number_input("Rounds", 2, 30, 8),
@@ -112,7 +114,11 @@ def sidebar():
                                   help='Sent as reasoning_effort. "default" sends nothing; not every model supports it.')
     start_paused = st.sidebar.checkbox("Start paused (step through calls)")
     if st.sidebar.button("Start game", type="primary", disabled=active, width="stretch"):
-        game = LastSignal(models, effort=effort, echo=False, **{k: int(v) for k, v in rules.items()})
+        try:
+            game = LastSignal(models, effort=effort, echo=False, **{k: int(v) for k, v in rules.items()})
+        except ValueError as e:
+            st.sidebar.error(str(e))
+            return
         if start_paused:
             game.pause()
         threading.Thread(target=game.run, daemon=True, name="squidgpt-game").start()
@@ -133,11 +139,17 @@ def sidebar():
         st.sidebar.button("⏹ Stop game", on_click=game.stop, disabled=not active, width="stretch")
 
     st.sidebar.subheader("View")
-    st.sidebar.toggle("Show secrets (code, digits)", value=True, key="spoilers")
+    st.sidebar.toggle("Show secrets (code, digits)", value=True, key="spoilers",
+                      help="Always hidden while you play a seat yourself, until the game ends.")
     st.sidebar.slider("Refresh every (s)", 0.5, 5.0, 1.0, 0.5, key="refresh")
 
 
 # --- panels ----------------------------------------------------------------
+
+def hidden_for(game):
+    """The human player whose view the GUI must respect, while their game is running."""
+    return game.human if game.human and game.phase != "over" else None
+
 
 def compact(n):
     return f"{n / 1000:.1f}k" if n >= 10_000 else str(n)
@@ -159,7 +171,9 @@ def status_bar(game):
     cols[5].metric("Avg latency", f"{avg:.1f}s")
 
     pending = [c for c in calls if c["status"] == "pending"]
-    if pending:
+    if game.human_request:
+        st.info("🧑 **Your turn!** Make your move below.")
+    elif pending:
         c = pending[-1]
         p = game.players[c["player"] - 1]
         st.info(f"Waiting on **{p.label}** ({c['action']}, call {c['id']})")
@@ -177,13 +191,14 @@ def status_bar(game):
 
 
 def board(game):
-    spoilers = st.session_state.spoilers
+    viewer = hidden_for(game)
+    spoilers = st.session_state.spoilers and not viewer
     st.markdown("**Rescue code**")
     cells = []
     for pos in range(1, game.code_length + 1):
         holders = game.holders(pos)
         lost = not any(p.alive for p in holders)
-        digit = game.code[pos - 1] if spoilers else "?"
+        digit = game.code[pos - 1] if spoilers or (viewer and pos in viewer.known) else "?"
         who = "".join(chip(p, struck=not p.alive) for p in holders) if spoilers else ""
         cells.append(f'<div class="sq-pos{" lost" if lost else ""}"><div class="n">pos {pos}</div>'
                      f'<div class="d">{digit}</div>{who}</div>')
@@ -194,7 +209,7 @@ def board(game):
         winner = p in game.winners
         state = "🏆 rescued" if winner else (f"☠️ {p.out_reason}" if not p.alive else "alive")
         width = min(100, 100 * p.oxygen / max(game.start_oxygen, 1))
-        digits = ", ".join(f"{pos}={d}" for pos, d in sorted(p.known.items())) if spoilers else "hidden"
+        digits = ", ".join(f"{pos}={d}" for pos, d in sorted(p.known.items())) if spoilers or p is viewer else "hidden"
         cards.append(
             f'<div class="sq-card{" out" if not p.alive else ""}{" win" if winner else ""}">'
             f'<div class="sq-card-top"><span class="sq-name" style="color:{color(p.number)}">{html.escape(p.name)}</span>'
@@ -206,7 +221,7 @@ def board(game):
     if game.radio_attempts:
         st.markdown("**Failed radio calls**")
         for a in game.radio_attempts:
-            sent = f" sent `{a['code']}`" if spoilers else ""
+            sent = f" sent `{a['code']}`" if spoilers or (viewer and a["sender"] == viewer.name) else ""
             st.markdown(f"R{a['round']} · **{a['sender']}**{sent} · wrong positions: {', '.join(map(str, a['wrong']))}")
 
 
@@ -233,6 +248,10 @@ def story_tab(game):
                              format_func=lambda n: game.players[n - 1].name)
     newest_first = c4.toggle("Newest first", value=True, key="newest_first")
     limit = c5.number_input("Max lines", 50, 5000, 300, 50, key="log_limit")
+    viewer = hidden_for(game)
+    if viewer:
+        st.caption(f"You only see what {viewer.name} can see until the game ends.")
+        events = [e for e in events if e["visible_to"] is None or viewer.number in e["visible_to"]]
     hidden = set()
     if not private:
         hidden.add("private")
@@ -275,7 +294,16 @@ def call_detail(game, call):
                 st.write(call["thinking"])
 
 
+def locked(game):
+    if hidden_for(game):
+        st.info("Hidden while you play, since it would show the other players' secrets. It unlocks when the game ends.")
+        return True
+    return False
+
+
 def players_tab(game):
+    if locked(game):
+        return
     calls = list(game.api_calls)
     events = list(game.events)
     rows = []
@@ -315,6 +343,8 @@ def players_tab(game):
 
 
 def calls_tab(game):
+    if locked(game):
+        return
     calls = list(game.api_calls)
     if not calls:
         st.write("_No API calls yet._")
@@ -354,6 +384,78 @@ def files_tab(game):
                        "api_calls.jsonl", width="stretch")
 
 
+def human_form(game, req, me):
+    """The form for the human's current turn. Returns the reply dict once submitted, else None."""
+    others = [p.name for p in game.alive if p != me]
+    key = f"human_{req['id']}"
+    with st.form(key):
+        if req["action"] == "talk":
+            public = st.text_area("Public message (everyone reads it)", key=key + "_public")
+            private = []
+            for i in range(game.max_private):
+                c1, c2 = st.columns([1, 2])
+                to = c1.selectbox("Private to", ["—"] + others, key=f"{key}_to{i}")
+                message = c2.text_input("Private message (only they read it)", key=f"{key}_msg{i}")
+                if to != "—" and message.strip():
+                    private.append({"to": to, "message": message})
+            reply = {"public": public, "private": private}
+            label = "Send"
+        elif req["action"] == "action":
+            gifts = []
+            for name in others:
+                amount = st.number_input(f"Give oxygen to {name}", 0, me.oxygen, 0, key=f"{key}_give_{name}")
+                if amount:
+                    gifts.append({"to": name, "amount": int(amount)})
+            use_radio = st.checkbox(f"Try the radio (a wrong code costs {game.radio_penalty} oxygen)",
+                                    key=key + "_radio")
+            code = st.text_input(f"Code ({game.code_length} digits)", key=key + "_code", max_chars=game.code_length)
+            take = []
+            if game.seats > 1:
+                take = st.multiselect(f"Take along (up to {game.seats - 1})", others,
+                                      max_selections=game.seats - 1, key=key + "_take")
+            reply = {"give": gifts, "radio": {"code": code, "take": take} if use_radio else None}
+            label = "Confirm actions"
+        else:
+            vote = st.selectbox("Throw overboard", ["(abstain)"] + others, key=key + "_vote")
+            statement = st.text_input("Public statement (optional)", key=key + "_statement")
+            reply = {"vote": None if vote == "(abstain)" else vote, "statement": statement}
+            label = "Vote"
+        reply["notebook"] = st.text_area("Your notebook (private notes, kept between turns)",
+                                         value=me.notebook, key=key + "_notebook")
+        if st.form_submit_button(label, type="primary"):
+            return reply
+    return None
+
+
+def human_panel(game):
+    me = game.human
+    req = game.human_request
+    if not me or req is None:
+        if me and me.alive and game.status in ACTIVE:
+            digits = ", ".join(f"position {pos} = {d}" for pos, d in sorted(me.known.items()))
+            st.caption(f"🧑 You are **{me.name}** · your digits: {digits} · waiting for the other players…")
+        return
+    with st.container(border=True):
+        st.subheader(f"🧑 Your turn, {me.name}: {req['action']}")
+        left, right = st.columns(2)
+        with left:
+            st.code(req["view"], language=None, wrap_lines=True)
+            with st.expander("Rules"):
+                st.write(me.system)
+        with right:
+            for error in req["errors"]:
+                st.error(error)
+            reply = human_form(game, req, me)
+    if reply is not None:
+        game.submit_human(reply)
+        # Give the game a moment to validate, so errors show up straight away.
+        for _ in range(40):
+            time.sleep(0.05)
+            if game.human_request is not req or req["errors"]:
+                break
+        st.rerun()
+
+
 # --- page ------------------------------------------------------------------
 
 sidebar()
@@ -371,12 +473,17 @@ if game is None:
     st.write("Pick the players' models in the sidebar and press **Start game**.")
     st.stop()
 
-refresh = st.session_state.refresh if game.status in ACTIVE else None
+# No polling while waiting for the human: nothing changes, and reruns would disturb the form.
+refresh = st.session_state.refresh if game.status in ACTIVE and not game.human_request else None
 
 
 @st.fragment(run_every=refresh)
 def live_view():
+    # The game just started waiting for the human: rerun the whole page to stop polling.
+    if game.human_request and refresh is not None:
+        st.rerun()
     status_bar(game)
+    human_panel(game)
     left, right = st.columns([2, 3])
     with left:
         board(game)

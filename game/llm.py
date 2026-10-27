@@ -11,6 +11,8 @@ MODELS = {
     "alias.complex-local": "GLM Complex (local)",
     "alias.medium-local": "DeepSeek Middle (local)",
 }
+# Pseudo model ID for a seat played by a person through the GUI.
+HUMAN = "human"
 # Comma-separated list, assigned to players in turn. Defaults to one player per toolbox model.
 DEFAULT_MODELS = [m.strip() for m in os.environ.get("SQUIDGPT_MODELS", ",".join(MODELS)).split(",") if m.strip()]
 # "default" sends no reasoning_effort and leaves it to the model.
@@ -20,6 +22,8 @@ client = OpenAI(base_url=BASE_URL, api_key=os.environ.get("KI_TOOLBOX_API_KEY", 
 
 
 def model_label(model):
+    if model == HUMAN:
+        return "🧑 You (human)"
     return MODELS.get(model, model)
 
 

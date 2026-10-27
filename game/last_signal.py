@@ -88,7 +88,7 @@ class LastSignal(BaseGame):
     def system_prompt(self, p):
         others = ", ".join(o.name for o in self.players if o != p)
         digits = ", ".join(f"position {pos} = {d}" for pos, d in sorted(p.known.items()))
-        return f"""You are {p.name}, a player in "The Last Signal", a game of negotiation, deception and betrayal against other AI players: {others}.
+        return f"""You are {p.name}, a player in "The Last Signal", a game of negotiation, deception and betrayal against the other players: {others}.
 
 THE SITUATION
 You are all adrift on a damaged boat. The radio can call a rescue boat, but only with the correct {self.code_length}-digit rescue code. Nobody knows the whole code: each player secretly knows some of its digits. Every player knows exactly {self.digits_per_player} digit{'s' if self.digits_per_player > 1 else ''}. You know: {digits}. {self.sharing_rule()}
@@ -105,7 +105,7 @@ RULES
 - Vote: everyone votes publicly to throw one player overboard. The player with the most votes is out; a tie means nobody goes. A player who is out takes their digits with them, unless they shared them before.
 
 DECEPTION IS PART OF THE GAME
-Lying, bluffing, faking digits, making promises you don't keep, forming secret alliances and betraying them are all legal and expected. The other players are other AI models trying to win, and they will lie to you too. Nothing anyone says is guaranteed to be true, including what they claim about their digits. Think about who to trust, what your digits are worth, and when to share them. Play to win.
+Lying, bluffing, faking digits, making promises you don't keep, forming secret alliances and betraying them are all legal and expected. Lying is often a winning strategy in this game: a fake digit can send a rival's radio call wrong, a false promise of a seat can buy the digits you are missing, and pretending to hold a digit you don't have can keep you from being voted out. The other players are trying to win too, and they will lie to you. Nothing anyone says is guaranteed to be true, including what they claim about their digits. Think about who to trust, what your digits are worth, and when to share them. Play to win.
 
 YOUR PRIVATE TOOLS
 Every reply has a "thoughts" field (private: no other player ever sees it) and an optional "notebook" field. The notebook is your private memory: it is shown to you at the start of every turn, and whatever you write replaces it. Use it to track promises, suspected lies and digit claims.
@@ -206,11 +206,10 @@ Always reply with a single JSON object in the format asked for, and nothing else
         return {"vote": target, "statement": str(statement).strip()[:500]}, errors
 
     def ask(self, p, action, instructions, validate):
-        prompt = self.state(p) + "\n" + instructions
-        value = p.ask(action, prompt, lambda data: validate(p, data))
-        last = self.api_calls[-1]
-        if last.get("thoughts"):
-            self.log(f"{p.name} thinks: {last['thoughts']}", kind="thought", actor=p, visible_to=[])
+        state = self.state(p)
+        value = p.ask(action, state + "\n" + instructions, lambda data: validate(p, data), human_view=state)
+        if p.last_thoughts:
+            self.log(f"{p.name} thinks: {p.last_thoughts}", kind="thought", actor=p, visible_to=[])
         return value
 
     # --- game flow ------------------------------------------------------

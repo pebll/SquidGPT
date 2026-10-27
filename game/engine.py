@@ -45,6 +45,7 @@ class Player:
         self.inbox = []  # events seen since the last prompt
         self.notebook = ""  # private memory the player rewrites as it likes
         self.alive = True
+        self.last_thoughts = None
         self.out_round = None
         self.out_reason = None
         self.input_tokens = 0
@@ -57,12 +58,20 @@ class Player:
     def label(self):
         return f"{self.name} ({llm.model_label(self.model)})"
 
-    def ask(self, action, prompt, validate):
-        """Ask the model for a JSON reply and validate it.
+    @property
+    def is_human(self):
+        return self.model == llm.HUMAN
 
-        validate(dict) returns (clean_value, errors). On invalid output the player gets the
-        errors and one retry; if that also fails, None is returned and the turn is skipped.
+    def ask(self, action, prompt, validate, human_view=None):
+        """Ask the model (or the human) for a JSON reply and validate it.
+
+        validate(dict) returns (clean_value, errors). On invalid output a model gets the errors
+        and one retry; if that also fails, None is returned and the turn is skipped. A human is
+        shown human_view (or the prompt) and asked again until the reply is valid.
         """
+        self.last_thoughts = None
+        if self.is_human:
+            return self.game.ask_human(self, action, human_view or prompt, validate)
         for attempt in range(2):
             self.game.checkpoint()
             call = self.game.new_call(self, action, prompt)
@@ -88,7 +97,7 @@ class Player:
                 value, errors = validate(data)
                 if isinstance(data.get("notebook"), str):
                     self.notebook = data["notebook"][:4000]
-                call["thoughts"] = data.get("thoughts")
+                call["thoughts"] = self.last_thoughts = data.get("thoughts")
             # Store a JSON-safe copy for logs and the GUI (players become their names).
             call["parsed"] = json.loads(json.dumps(value, default=str))
             call["errors"] = errors
@@ -116,6 +125,9 @@ class BaseGame:
         self.events = []
         self.api_calls = []
         self.winners = []
+        self.human_request = None  # the turn a human player is being asked to play, if any
+        if sum(m == llm.HUMAN for m in models) > 1:
+            raise ValueError("Only one human player is supported (everyone shares one screen).")
         names = self.PLAYER_NAMES[:len(models)]
         self.players = [Player(self, i, name, model) for i, (name, model) in enumerate(zip(names, models), start=1)]
         # Controls used by the GUI: pause/resume, single-step and stop.
@@ -169,6 +181,39 @@ class BaseGame:
         player.alive = False
         player.out_round = self.round
         player.out_reason = reason
+
+    @property
+    def human(self):
+        return next((p for p in self.players if p.is_human), None)
+
+    def ask_human(self, player, action, view, validate):
+        """Wait until the GUI submits the human's reply (a dict), validating it like a model's."""
+        self.checkpoint()
+        request = {"id": len(self.events), "player": player, "action": action, "view": view,
+                   "errors": [], "reply": None, "ready": threading.Event()}
+        self.human_request = request
+        try:
+            while True:
+                while not request["ready"].wait(0.2):
+                    if self._stop.is_set():
+                        raise GameStopped()
+                value, errors = validate(request["reply"])
+                if not errors:
+                    if isinstance(request["reply"].get("notebook"), str):
+                        player.notebook = request["reply"]["notebook"][:4000]
+                    return value
+                request["errors"] = errors
+                request["ready"].clear()
+        finally:
+            self.human_request = None
+
+    def submit_human(self, reply):
+        """Called by the GUI with the human's reply for the current request."""
+        request = self.human_request
+        if request:
+            request["errors"] = []
+            request["reply"] = reply
+            request["ready"].set()
 
     def new_call(self, player, action, prompt):
         call = {

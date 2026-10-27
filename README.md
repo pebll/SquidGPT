@@ -46,6 +46,8 @@ In the sidebar, pick the number of players and each player's model (or one model
 - **API calls:** every call with its prompt, reply, parsed action, validation errors, tokens and latency.
 - **Errors & files:** the traceback if the game crashes, plus downloads of the logs.
 
+**Play yourself:** set one seat to "🧑 You (human)". On your turn the game waits and shows you a form (talk, give oxygen and use the radio, or vote) along with everything your player knows. While you play, the GUI hides everything you shouldn't see (the code, other players' digits, private messages between others, thoughts, and the Players and API calls tabs) until the game ends.
+
 **Pause**, **Step** (let exactly one API call through) and **Stop** control a running game. "Start paused" lets you step through a game from the first call.
 
 ### Terminal
