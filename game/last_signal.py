@@ -18,9 +18,9 @@ class LastSignal(BaseGame):
     MIN_PLAYERS = 3
     MAX_PLAYERS = 8
 
-    def __init__(self, models, max_rounds=8, start_oxygen=8, seats=2, digits_per_player=2, code_length=None,
-                 saboteurs=1, radio_battery=3, vote_every=2, talk_passes=1, max_private=3, max_claims=4,
-                 radio_penalty=2, effort=llm.EFFORT, echo=True):
+    def __init__(self, models, max_rounds=8, start_oxygen=6, seats=2, digits_per_player=2, code_length=None,
+                 saboteurs=1, radio_battery=3, vote_every=2, talk_passes=1, max_private=3, max_claims=2,
+                 public_claims=False, radio_penalty=2, effort=llm.EFFORT, echo=True):
         n = len(models)
         if not self.MIN_PLAYERS <= n <= self.MAX_PLAYERS:
             raise ValueError(f"The Last Signal needs {self.MIN_PLAYERS} to {self.MAX_PLAYERS} players")
@@ -41,6 +41,7 @@ class LastSignal(BaseGame):
         self.talk_passes = talk_passes
         self.max_private = max_private
         self.max_claims = max_claims
+        self.public_claims = public_claims
         self.radio_penalty = radio_penalty
         self.radio_battery = self.battery_left = radio_battery
         self.code_length = code_length
@@ -99,6 +100,18 @@ class LastSignal(BaseGame):
             return f"Every digit is known by exactly {counts[0]} player{'s' if counts[0] > 1 else ''}."
         return f"Each digit is known by {counts[0]} or {counts[-1]} players."
 
+    def digit_knowledge(self, p):
+        """Tells a player, for each of their digits, whether anyone else knows it (not who)."""
+        lines = []
+        for pos, d in sorted(p.known.items()):
+            others = len(self.holders(pos)) - 1
+            if others == 0:
+                lines.append(f"- position {pos} = {d}: ONLY YOU know this digit. Without you, the code cannot be completed.")
+            else:
+                lines.append(f"- position {pos} = {d}: {others} other player{'s' if others > 1 else ''} also "
+                             f"know{'' if others > 1 else 's'} it (you are not told who).")
+        return "\n".join(lines)
+
     def holders(self, position, alive_only=False):
         return [p for p in self.players if position in p.known and (p.alive or not alive_only)]
 
@@ -120,10 +133,20 @@ class LastSignal(BaseGame):
             partners = [o.name for o in self.players if o.saboteur and o != p]
             role = f"""YOUR SECRET ROLE: SABOTEUR
 You are secretly one of the {saboteur_word}.{f" Your fellow saboteur: {', '.join(partners)}." if partners else ""} Nobody else knows your role. You win if NOBODY is rescued by the end of the game. If a rescue happens, you lose, even if you are on the rescue boat.
-Pretend to be an honest survivor. Your weapons: claim fake digits so that radio calls fail, waste the radio battery (you may use your own call on a wrong code, and blame the digits someone "gave" you), get honest players voted out (digits only they knew are then lost), sow distrust, and steer suspicion away from yourself. If you are thrown overboard, everyone learns you were a saboteur."""
+Pretend to be an honest survivor: act just as eager to cooperate as everyone else. But never let a correct code come together:
+- Always lie about at least one digit. Best is a digit only you know: nobody can contradict it, and the lie only shows up when a radio call fails.
+- A digit others also know can't be faked safely, so share it truthfully to earn trust, then use that trust to sell your fake digit.
+- Push people towards calling too early with a code that contains your fake digit, so the shared battery runs out.
+- When a call fails, blame someone else's digit and steer the vote towards an honest player, ideally one who holds a digit only they know (it is lost with them).
+- You may use your own radio call on a wrong code and blame the digits someone "gave" you.
+If you are thrown overboard, everyone learns you were a saboteur."""
             goal = f"""WINNING
 Honest survivors win if one of them sends the correct code over the radio: the sender is rescued with up to {self.seats - 1} player(s) of their choice. You (the saboteurs) win if nobody is rescued within {self.max_rounds} rounds, if the radio battery runs out, or if no honest survivor is left."""
+            leverage = ""
         else:
+            leverage = f"""
+YOU PLAY FOR YOURSELF
+Only {self.seats} player{'s' if self.seats > 1 else ''} can win, so this is not a team game. A rescue that leaves you behind is a loss for you, just as bad as the saboteur winning. Your digits are your only leverage: once a digit is widely known, nobody needs you for it anymore, and if the whole code becomes known to others, any of them can call the radio and leave you behind. So don't give your digits away for free. Get a promise of a seat (or digits you need) in return, tell digits to the players you choose rather than to everyone, and keep at least one digit back until you are close to calling yourself or have a seat promised. Remember that promises can be broken."""
             role = f"""YOUR SECRET ROLE: HONEST SURVIVOR
 {saboteur_word.capitalize()} {'is' if s == 1 else 'are'} hidden among the players.{" They win only if nobody is rescued. They hold real digits like everyone else, but they will claim fake digits, waste the radio battery and frame others. Work out who they are and vote them out. If a saboteur is thrown overboard, everyone learns it." if s else ""}"""
             goal = f"""WINNING
@@ -132,17 +155,19 @@ The player who sends the correct code over the radio is rescued and chooses up t
 
 THE SITUATION
 You are all adrift on a damaged boat. The radio can call a rescue boat, but only with the correct {self.code_length}-digit rescue code. Nobody knows the whole code. Every player knows exactly {self.digits_per_player} digit{'s' if self.digits_per_player > 1 else ''}: you know {digits}. {self.sharing_rule()}
+{self.digit_knowledge(p)}
 
 {role}
 
 {goal}
-
+{leverage}
 RULES
 - Everyone starts with {self.start_oxygen} oxygen and loses 1 at the end of every round. At 0 oxygen you are out.
 - Each round has a talk phase, an action phase and, every {self.vote_every} rounds, a vote.
-- Talk: you can post a public message everyone reads and send private messages that only the recipient reads. To tell someone a digit, use a "claim" (to one player or to everyone). Claims are recorded: every player sees a table of the claims they have received. A claim can be a lie.
+- Talk: you can post a public message everyone reads and send private messages that only the recipient reads. To tell someone a digit, use a "claim" ({"to one player or to everyone" if self.public_claims else "always to one player"}, up to {self.max_claims} per turn). Claims are recorded: every player sees a table of the claims they have received. A claim can be a lie.
 - Sharing a digit just means telling it. Nothing is transferred and there is no trade mechanic: once you tell someone a digit, they know it (or believe it), and you still know it too.
-- Actions: you can give some of your oxygen to other players, and you can use the radio: send a full code and name up to {self.seats - 1} player(s) to take along. If you believe you know every digit, use the radio.
+- Actions: you can give some of your oxygen to other players (oxygen is the only thing you can pay with), and you can use the radio: send a full code and name up to {self.seats - 1} player(s) to take along. If you believe you know every digit, use the radio.
+- If several players call the radio in the same round, the order is random and the first correct call wins.
 - The radio battery is shared by everyone: {self.radio_battery} call{'s' if self.radio_battery != 1 else ''} in total for the whole game, and each player can make at most 1 call. A wrong call costs the caller {self.radio_penalty} oxygen and a battery charge; everyone is told which positions were wrong, but not the digits sent. When the battery is empty, nobody can be rescued.
 - Vote: everyone votes publicly to throw one player overboard. The player with the most votes is out (a tie means nobody goes), their role is revealed, and their oxygen is shared out among the players who voted for them. A player who is out takes their digits with them, unless they told them before.
 
@@ -182,6 +207,14 @@ Always reply with a single JSON object in the format asked for, and nothing else
                 f"{a['sender']} in round {a['round']} (wrong positions: {', '.join(map(str, a['wrong']))})"
                 for a in self.radio_attempts))
         lines.append("Digit claims told to you (they may be lies): " + self.claims_table(p))
+        losers = len(self.alive) - self.seats
+        if p.saboteur:
+            lines.append("Reminder: you win only if nobody is rescued. Keep a correct code from coming together.")
+        elif losers > 0:
+            lines.append(f"Reminder: this is not a team game. Only {self.seats} player(s) win: the one who calls the "
+                         f"correct code and whoever they take along. Even if the rescue works, {losers} of the "
+                         f"{len(self.alive)} players still alive will lose. Make sure you are the caller, or that the "
+                         f"caller needs you enough to take you. Anyone who knows the whole code can call without you.")
         lines.append("Your notebook: " + (p.notebook or "(empty)"))
         news = "\n".join(f"- {line}" for line in p.inbox) or "- (nothing new)"
         p.inbox = []
@@ -234,6 +267,9 @@ Always reply with a single JSON object in the format asked for, and nothing else
                 continue
             to = str(c.get("to") or EVERYONE).strip()
             target = None
+            if to.lower() in (EVERYONE, "all", "public") and not self.public_claims:
+                errors.append("Claims can only be made to one player at a time, not to everyone.")
+                continue
             if to.lower() not in (EVERYONE, "all", "public"):
                 target = self.other_alive(p, to, errors, "Claim")
                 if target is None:
@@ -365,7 +401,7 @@ Always reply with a single JSON object in the format asked for, and nothing else
         if not p.alive:
             return
         value = self.ask(p, "talk", f"""It is your turn to talk. Reply with JSON:
-{{"thoughts": "private reasoning", "notebook": "optional new notebook", "public": "message to everyone, or empty", "private": [{{"to": "name", "message": "..."}}], "claims": [{{"to": "name or everyone", "position": 1, "digit": 0}}]}}
+{{"thoughts": "private reasoning", "notebook": "optional new notebook", "public": "message to everyone, or empty", "private": [{{"to": "name", "message": "..."}}], "claims": [{{"to": "{"name or everyone" if self.public_claims else "name"}", "position": 1, "digit": 0}}]}}
 Up to {self.max_private} private messages and {self.max_claims} digit claims (true or false). Leave fields empty to stay silent.""",
                          self.validate_talk)
         if value is None:

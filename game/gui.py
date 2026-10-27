@@ -93,7 +93,7 @@ def sidebar():
     with st.sidebar.expander("Rules"):
         rules = {
             "max_rounds": st.number_input("Rounds", 2, 30, 8),
-            "start_oxygen": st.number_input("Starting oxygen", 1, 30, 8),
+            "start_oxygen": st.number_input("Starting oxygen", 1, 30, 6),
             "seats": st.number_input("Seats on the rescue boat", 1, count, min(2, count)),
             "saboteurs": st.number_input("Hidden saboteurs", 0, (count - 1) // 2, min(1, (count - 1) // 2),
                                          help="Secret players who win if nobody is rescued."),
@@ -103,7 +103,9 @@ def sidebar():
             "vote_every": st.number_input("Vote every N rounds", 1, 10, 2),
             "talk_passes": st.number_input("Talk turns per round", 1, 5, 1),
             "max_private": st.number_input("Private messages per talk turn", 0, 5, 3),
-            "max_claims": st.number_input("Digit claims per talk turn", 0, 8, 4),
+            "max_claims": st.number_input("Digit claims per talk turn", 0, 8, 2),
+            "public_claims": st.checkbox("Allow claims to everyone at once",
+                                         help="Off: claims always go to one player, so players must choose whom to tell."),
             "radio_penalty": st.number_input("Oxygen lost on a wrong radio call", 0, 10, 2),
         }
         k = int(rules["digits_per_player"])
@@ -120,7 +122,8 @@ def sidebar():
     start_paused = st.sidebar.checkbox("Start paused (step through calls)")
     if st.sidebar.button("Start game", type="primary", disabled=active, width="stretch"):
         try:
-            game = LastSignal(models, effort=effort, echo=False, **{k: int(v) for k, v in rules.items()})
+            game = LastSignal(models, effort=effort, echo=False, **{k: v if isinstance(v, bool) else int(v)
+                                                                for k, v in rules.items()})
         except ValueError as e:
             st.sidebar.error(str(e))
             return
@@ -451,7 +454,8 @@ def human_form(game, req, me):
             st.caption("Digit claims (recorded in the other players' tables; they can be lies):")
             for i in range(game.max_claims):
                 c1, c2, c3 = st.columns([2, 1, 1])
-                to = c1.selectbox("Claim to", ["—", "everyone"] + others, key=f"{key}_cto{i}")
+                to = c1.selectbox("Claim to", ["—"] + (["everyone"] if game.public_claims else []) + others,
+                                  key=f"{key}_cto{i}")
                 pos = c2.number_input("Position", 1, game.code_length, 1, key=f"{key}_cpos{i}")
                 digit = c3.number_input("Digit", 0, 9, 0, key=f"{key}_cdig{i}")
                 if to != "—":

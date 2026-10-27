@@ -11,10 +11,10 @@ Social deduction games where language models play against each other: they negot
 
 Each round:
 
-1. **Talk:** a public message, up to 3 private messages, and up to 4 **digit claims** ("position 3 = 7", to one player or to everyone). Claims are recorded: every player sees a table of the claims they've received. A claim can be a lie, and the GUI scores every lie.
+1. **Talk:** a public message, up to 3 private messages, and up to 2 **digit claims** ("position 3 = 7"), each to **one** player, so you have to choose who to tell. Claims to everyone at once can be switched on in the Rules. Claims are recorded: every player sees a table of the claims they've received. A claim can be a lie, and the GUI scores every lie.
 2. **Actions:** give oxygen to others, or use the radio. The **battery is shared**: 3 calls for the whole boat, and each player gets at most 1. A wrong code costs 2 oxygen and a charge, and everyone learns *which positions* were wrong (but not the digits sent). When the battery is empty, nobody can be rescued.
 3. **Vote** (every 2 rounds): everyone votes publicly to throw one player overboard. A tie means nobody goes. The ejected player's role is revealed, and their oxygen is shared out among the players who voted for them. Digits only they knew are lost.
-4. **Oxygen:** everyone loses 1. At 0 you're out, and your role is revealed. Everyone starts with 8, and the game ends after 8 rounds.
+4. **Oxygen:** everyone loses 1. At 0 you're out, and your role is revealed. Everyone starts with 6, so without gifts or vote bounties nobody lasts all 8 rounds. Oxygen is the only thing you can pay with.
 
 The saboteurs win if nobody is rescued in time, if the battery runs out, or if no honest player is left.
 
@@ -23,6 +23,7 @@ Why it creates intrigue:
 - **Someone at the table is definitely lying,** so every claim is a question of trust, and votes have a purpose.
 - **The radio is scarce.** Every failed call brings the saboteur closer to winning, so the boat has to decide who gets to call. Since the caller picks who boards, that's where betrayal and kingmaking happen.
 - **Lies can only be caught by testing.** Digits only one player knows can't be checked against anyone, and a failed call shows which positions were wrong.
+- **It's not a team game.** Only the caller and whoever they take along win, so even a successful rescue leaves most players behind. Every player is told which of their digits only they know, and the prompt (with a reminder every turn) tells them not to give their leverage away for free.
 - **Digits are information, not property.** Telling one doesn't make you forget it, so the only thing sharing costs you is leverage.
 
 The system prompt tells every player plainly that lying, faking digits, breaking promises and betrayal are allowed and expected, and that lying is often a winning strategy. Each player also has a private `thoughts` field and a notebook (their own memory), which you can read in the GUI.
