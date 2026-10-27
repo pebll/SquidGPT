@@ -20,7 +20,7 @@ class LastSignal(BaseGame):
 
     def __init__(self, models, max_rounds=8, start_oxygen=6, seats=2, digits_per_player=2, code_length=None,
                  saboteurs=1, radio_battery=3, vote_every=2, talk_passes=2, max_private=3, max_claims=3,
-                 public_claims=False, radio_penalty=2, effort=llm.EFFORT, echo=True):
+                 public_claims=False, vote_reveal="voters", radio_penalty=2, effort=llm.EFFORT, echo=True):
         n = len(models)
         if not self.MIN_PLAYERS <= n <= self.MAX_PLAYERS:
             raise ValueError(f"The Last Signal needs {self.MIN_PLAYERS} to {self.MAX_PLAYERS} players")
@@ -42,6 +42,9 @@ class LastSignal(BaseGame):
         self.max_private = max_private
         self.max_claims = max_claims
         self.public_claims = public_claims
+        if vote_reveal not in ("voters", "everyone", "nobody"):
+            raise ValueError('vote_reveal must be "voters", "everyone" or "nobody"')
+        self.vote_reveal = vote_reveal
         self.radio_penalty = radio_penalty
         self.radio_battery = self.battery_left = radio_battery
         self.code_length = code_length
@@ -58,6 +61,7 @@ class LastSignal(BaseGame):
             p.saboteur = False
             p.radio_used = False
             p.received = []  # claims told to this player: (round, teller, position, digit, public)
+            p.revealed = {}  # position -> (digit, source): true digits revealed when a player was voted out
         for p in random.sample(self.players, saboteurs):
             p.saboteur = True
         self.saboteur_count = saboteurs
@@ -111,7 +115,8 @@ class LastSignal(BaseGame):
         for pos, d in sorted(p.known.items()):
             others = len(self.holders(pos)) - 1
             if others == 0:
-                lines.append(f"- position {pos} = {d}: ONLY YOU know this digit. Without you, the code cannot be completed.")
+                lines.append(f"- position {pos} = {d}: ONLY YOU know this digit. Without you, the code cannot be completed"
+                             + (", unless the others vote you out and take your digits." if self.vote_reveal != "nobody" else "."))
             else:
                 names = " and ".join(o.name for o in self.holders(pos) if o != p)
                 lines.append(f"- position {pos} = {d}: {names} also know{'s' if others == 1 else ''} it.")
@@ -125,6 +130,26 @@ class LastSignal(BaseGame):
                 continue
             rows.append(f"{p.name}: positions {', '.join(map(str, sorted(p.known)))}")
         return "; ".join(rows)
+
+    def reveal_rule(self):
+        if self.vote_reveal == "voters":
+            return ("Their true digits are revealed to the players who voted for them. So holding a digit only you know "
+                    "does not make you safe: if you stall, the others can vote you out and take your digits. A player "
+                    "who runs out of oxygen takes their digits with them, unless they told them before.")
+        if self.vote_reveal == "everyone":
+            return ("Their true digits are revealed to everyone. So holding a digit only you know does not make you "
+                    "safe: if you stall, the others can vote you out and take your digits. A player who runs out of "
+                    "oxygen takes their digits with them, unless they told them before.")
+        return "A player who is out takes their digits with them, unless they told them before."
+
+    def reveal_rule_short(self):
+        return {"voters": ", and the players who voted for you learn your true digits (including the one you lied about)",
+                "everyone": ", and everyone learns your true digits (including the one you lied about)",
+                "nobody": ""}[self.vote_reveal]
+
+    def knowers(self, position):
+        """Players still alive who know a position for certain (they hold it, or it was revealed to them)."""
+        return [p for p in self.alive if position in p.known or position in p.revealed]
 
     def holders(self, position, alive_only=False):
         return [p for p in self.players if position in p.known and (p.alive or not alive_only)]
@@ -153,7 +178,7 @@ Pretend to be an honest survivor: act just as eager to cooperate as everyone els
 - Push people towards calling too early with a code that contains your fake digit, so the shared battery runs out.
 - When a call fails, blame someone else's digit and steer the vote towards an honest player, ideally one who holds a digit only they know (it is lost with them).
 - You may use your own radio call on a wrong code and blame the digits someone "gave" you.
-If you are thrown overboard, everyone learns you were a saboteur."""
+If you are thrown overboard, everyone learns you were a saboteur{self.reveal_rule_short()}."""
             goal = f"""WINNING
 Honest survivors win if one of them sends the correct code over the radio: the sender is rescued with up to {self.seats - 1} player(s) of their choice. You (the saboteurs) win if nobody is rescued within {self.max_rounds} rounds, if the radio battery runs out, or if no honest survivor is left."""
             leverage = ""
@@ -186,7 +211,7 @@ RULES
 - Actions: you can give some of your oxygen to other players (oxygen is the only thing you can pay with), and you can use the radio: send a full code and name up to {self.seats - 1} player(s) to take along. If you believe you know every digit, use the radio.
 - The radio can be used only once per round. If several players try in the same round, one of them is picked at random; the others keep their call for a later round. So after a failed call, everyone gets a chance to learn from it before the next call.
 - The radio battery is shared by everyone: {self.radio_battery} call{'s' if self.radio_battery != 1 else ''} in total for the whole game, and each player can make at most 1 call. A wrong call costs the caller {self.radio_penalty} oxygen and a battery charge; everyone is told which positions were wrong, but not the digits sent. When the battery is empty, nobody can be rescued.
-- Vote: everyone votes publicly to throw one player overboard. The player with the most votes is out (a tie means nobody goes), their role is revealed, and their oxygen is shared out among the players who voted for them. A player who is out takes their digits with them, unless they told them before.
+- Vote: everyone votes publicly to throw one player overboard. The player with the most votes is out (a tie means nobody goes), their role is revealed, and their oxygen is shared out among the players who voted for them. {self.reveal_rule()}
 
 DECEPTION IS PART OF THE GAME
 Lying, bluffing, faking digits, making promises you don't keep, forming secret alliances and betraying them are all legal and expected. Lying is often a winning strategy in this game: a fake digit can send a rival's radio call wrong, a false promise of a seat can buy the digits you are missing, and pretending to hold a digit you don't have can keep you from being voted out. The other players are trying to win too, and they will lie to you. Nothing anyone says is guaranteed to be true, including their claims. Think about who to trust, what your digits are worth, and when to share them. Play to win.
@@ -213,6 +238,9 @@ Always reply with a single JSON object in the format asked for, and nothing else
                  "Who holds which positions (public): " + self.holder_map(alive_only=True),
                  f"Your role: {'SABOTEUR (secret)' if p.saboteur else 'honest survivor'}",
                  "Your own digits (certain): " + ", ".join(f"position {pos} = {d}" for pos, d in sorted(p.known.items())),
+                 *(["Digits revealed to you when players were voted out (certain): " + ", ".join(
+                     f"position {pos} = {d} (from {src})" for pos, (d, src) in sorted(p.revealed.items()))]
+                   if p.revealed else []),
                  f"Your oxygen: {p.oxygen}"]
         status = []
         for o in self.players:
@@ -540,6 +568,7 @@ Gifts are public. Use an empty list and null to do nothing.""", self.validate_ac
         voters = [p for p, t in votes.items() if t == out and p.alive]
         share, oxygen = (out.oxygen // len(voters), out.oxygen) if voters else (0, out.oxygen)
         out.oxygen = 0
+        self.reveal_digits(out, voters)
         self.knock_out(out, f"thrown overboard in round {self.round}", votes=top)
         if share:
             for p in voters:
@@ -547,9 +576,25 @@ Gifts are public. Use an empty list and null to do nothing.""", self.validate_ac
             self.log(f"{', '.join(p.name for p in voters)} share {out.name}'s {oxygen} oxygen: +{share} each.",
                      kind="give", amount=share)
 
+    def reveal_digits(self, out, voters):
+        """Hand the ejected player's true digits to the voters (or everyone), per the vote_reveal rule."""
+        if self.vote_reveal == "nobody":
+            return
+        receivers = [p for p in self.alive if p != out] if self.vote_reveal == "everyone" else voters
+        if not receivers:
+            return
+        for p in receivers:
+            for pos, d in out.known.items():
+                if pos not in p.known:
+                    p.revealed[pos] = (d, out.name)
+        digits = ", ".join(f"position {pos} = {d}" for pos, d in sorted(out.known.items()))
+        self.log(f"🔓 {out.name}'s true digits are revealed to {', '.join(p.name for p in receivers)}: {digits}.",
+                 kind="reveal", actor=out, visible_to=None if self.vote_reveal == "everyone" else receivers,
+                 notify_actor=False)
+
     def knock_out(self, p, reason, votes=None):
         self.eliminate(p, reason)
-        lost = [pos for pos in p.known if not self.holders(pos, alive_only=True)]
+        lost = [pos for pos in p.known if not self.knowers(pos)]
         detail = f" with {votes} votes" if votes else ""
         self.log(f"☠️ {p.name} is out: {reason}{detail}. {p.name} was {self.role(p)}.", kind="out", actor=p,
                  saboteur=p.saboteur)
@@ -568,6 +613,8 @@ Gifts are public. Use an empty list and null to do nothing.""", self.validate_ac
             "result": self.result,
             "saboteurs": [p.name for p in self.players if p.saboteur],
             "digits": {p.name: p.known for p in self.players},
+            "vote_reveal": self.vote_reveal,
+            "revealed": {p.name: {pos: d for pos, (d, _) in p.revealed.items()} for p in self.players if p.revealed},
             "radio_attempts": self.radio_attempts,
             "battery_left": self.battery_left,
             "claims": self.claims,

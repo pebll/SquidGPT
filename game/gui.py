@@ -23,7 +23,7 @@ PLAYER_COLORS = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#42d4f4
 KIND_ICONS = {
     "round": "🔔", "phase": "📣", "digits": "🔢", "public": "💬", "private": "🔒", "thought": "💭",
     "give": "🎁", "radio": "📻", "rescue": "🚁", "vote": "🗳️", "out": "☠️", "lost": "🕳️",
-    "invalid": "⚠️", "claim": "🔢", "winner": "🏆", "end": "🏁", "error": "❌", "info": "ℹ️",
+    "invalid": "⚠️", "claim": "🔢", "reveal": "🔓", "winner": "🏆", "end": "🏁", "error": "❌", "info": "ℹ️",
 }
 ACTIVE = ("running", "paused")
 MODEL_OPTIONS = list(dict.fromkeys(list(llm.MODELS) + llm.DEFAULT_MODELS))
@@ -104,6 +104,9 @@ def sidebar():
             "talk_passes": st.number_input("Talk turns per round", 1, 5, 2),
             "max_private": st.number_input("Private messages per talk turn", 0, 5, 3),
             "max_claims": st.number_input("Digit claims per talk turn", 0, 8, 3),
+            "vote_reveal": st.selectbox("When a player is voted out, their digits go to", ["voters", "everyone", "nobody"],
+                                        format_func={"voters": "the players who voted for them", "everyone": "everyone",
+                                                     "nobody": "nobody (they are lost)"}.get),
             "public_claims": st.checkbox("Allow claims to everyone at once",
                                          help="Off: claims always go to one player, so players must choose whom to tell."),
             "radio_penalty": st.number_input("Oxygen lost on a wrong radio call", 0, 10, 2),
@@ -122,7 +125,7 @@ def sidebar():
     start_paused = st.sidebar.checkbox("Start paused (step through calls)")
     if st.sidebar.button("Start game", type="primary", disabled=active, width="stretch"):
         try:
-            game = LastSignal(models, effort=effort, echo=False, **{k: v if isinstance(v, bool) else int(v)
+            game = LastSignal(models, effort=effort, echo=False, **{k: v if isinstance(v, (bool, str)) else int(v)
                                                                 for k, v in rules.items()})
         except ValueError as e:
             st.sidebar.error(str(e))
@@ -209,8 +212,8 @@ def board(game):
     cells = []
     for pos in range(1, game.code_length + 1):
         holders = game.holders(pos)
-        lost = not any(p.alive for p in holders)
-        digit = game.code[pos - 1] if spoilers or (viewer and pos in viewer.known) else "?"
+        lost = not game.knowers(pos)
+        digit = game.code[pos - 1] if spoilers or (viewer and (pos in viewer.known or pos in viewer.revealed)) else "?"
         who = "".join(chip(p, struck=not p.alive) for p in holders) if spoilers else ""
         cells.append(f'<div class="sq-pos{" lost" if lost else ""}"><div class="n">pos {pos}</div>'
                      f'<div class="d">{digit}</div>{who}</div>')
