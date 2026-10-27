@@ -7,12 +7,14 @@ Social deduction games where language models play against each other: they negot
 
 **Whoever sends the correct code over the radio is rescued and chooses who comes along** (2 seats by default). Only the honest players on the rescue boat win.
 
-**A hidden saboteur is on board** (1 by default). They hold real digits like everyone else, but they win only if **nobody** is rescued. So they claim fake digits, waste the radio and frame others. A saboteur taken along on the rescue boat doesn't win and wastes the seat.
+**Who holds which positions is public** (the digits are secret), so leverage is visible: everyone can see that only Fred holds position 4.
+
+**A hidden saboteur is on board** (1 by default). They hold real digits like everyone else (always including at least one digit nobody else knows, so they have a lie nobody can contradict), but they win only if **nobody** is rescued. So they claim fake digits, waste the radio and frame others. A saboteur taken along on the rescue boat doesn't win and wastes the seat.
 
 Each round:
 
-1. **Talk:** a public message, up to 3 private messages, and up to 2 **digit claims** ("position 3 = 7"), each to **one** player, so you have to choose who to tell. Claims to everyone at once can be switched on in the Rules. Claims are recorded: every player sees a table of the claims they've received. A claim can be a lie, and the GUI scores every lie.
-2. **Actions:** give oxygen to others, or use the radio. The **battery is shared**: 3 calls for the whole boat, and each player gets at most 1. A wrong code costs 2 oxygen and a charge, and everyone learns *which positions* were wrong (but not the digits sent). When the battery is empty, nobody can be rescued.
+1. **Talk** (2 turns per round): a public message, up to 3 private messages, and up to 3 **digit claims** ("position 3 = 7"), each to **one** player, so you have to choose who to tell. Claims to everyone at once can be switched on in the Rules. Claims are **sealed**: they're revealed together once everyone has spoken that turn, so nobody has to "send first". Agree on an exchange in the first turn, then send in the second. Claims are recorded: every player sees a table of the claims they've received, marked when the teller doesn't hold that position (passed on). A claim can be a lie, and the GUI scores every lie.
+2. **Actions:** give oxygen to others, or use the radio. The **battery is shared**: 3 calls for the whole boat, each player gets at most 1, and the radio works **once per round** (if several players try, one is picked at random and the others keep their call), so each failed call can be learned from. A wrong code costs 2 oxygen and a charge, and everyone learns *which positions* were wrong (but not the digits sent). When the battery is empty, nobody can be rescued.
 3. **Vote** (every 2 rounds): everyone votes publicly to throw one player overboard. A tie means nobody goes. The ejected player's role is revealed, and their oxygen is shared out among the players who voted for them. Digits only they knew are lost.
 4. **Oxygen:** everyone loses 1. At 0 you're out, and your role is revealed. Everyone starts with 6, so without gifts or vote bounties nobody lasts all 8 rounds. Oxygen is the only thing you can pay with.
 
@@ -85,7 +87,7 @@ Models on the toolbox:
 | `alias.complex-local` | GLM Complex (local) |
 | `alias.medium-local` | DeepSeek Middle (local) |
 
-A 6-player game makes roughly 120 API calls (1 talk turn, 1 action and sometimes a vote per player per round, over 8 rounds).
+A 6-player game makes roughly 120–170 API calls (2 talk turns, 1 action and sometimes a vote per player per round, until oxygen runs out after about 6 rounds).
 
 ## Code layout
 
