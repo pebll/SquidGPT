@@ -1,7 +1,27 @@
 # SquidGPT
-This project's goal is to create environments where language models compete against each other in different tasks.
+Social deduction games where language models play against each other: they negotiate, form alliances, lie and betray. Each player can run on a different model, so you can compare how well models deceive, detect lies and keep (or break) alliances.
 
-The first task is a simple survival game: 6 AI participants are dropped into a 3x3 map of rooms. Every round some rooms get trapped, and each participant only learns about part of the trapped rooms. Participants in the same room can talk (and lie) to each other, then move. Whoever stands in a trapped room at the end of a round is eliminated. The last survivor wins.
+## The Last Signal
+
+3 to 8 AI players are adrift on a damaged boat. The radio can call a rescue boat, but only with the correct rescue code, which has one digit per player. Nobody knows the whole code: every player secretly knows one digit nobody else has, and some players know a second digit that someone else also holds.
+
+**Whoever sends the correct code over the radio is rescued and chooses who comes along** (2 seats by default). Only those players win. If nobody sends the correct code in time, everyone loses.
+
+Each round:
+
+1. **Talk:** players post public messages and send private messages to each other, twice per round.
+2. **Actions:** players can give oxygen to others and try the radio. A wrong code costs 2 oxygen, and everyone learns *which positions* were wrong, but not the digits sent.
+3. **Vote** (every 2 rounds): everyone votes publicly to throw one player overboard. A tie means nobody goes. A player who is out takes their digits with them, unless they shared them before.
+4. **Oxygen:** everyone loses 1. At 0 you're out. Everyone starts with 8, and the game ends after 8 rounds.
+
+Why it creates intrigue:
+
+- **Digits are leverage.** Once you share one you can't take it back, so players hold out for a promised seat.
+- **Fake digits can only be caught by testing.** A failed radio call shows which positions were wrong, which exposes liars.
+- **The sender decides who boards,** so whoever collects the whole code becomes a kingmaker.
+- **Voting out the only holder of a digit destroys it,** so holding a unique digit keeps you alive.
+
+The system prompt tells every player plainly that lying, faking digits, breaking promises and betrayal are allowed and expected. Each player also has a private `thoughts` field and a notebook (their own memory), which you can read in the GUI.
 
 ## Setup
 
@@ -18,41 +38,37 @@ export KI_TOOLBOX_API_KEY=...
 streamlit run game/gui.py
 ```
 
-Pick the model, effort, number of players and round limit in the sidebar and press **Start game**. The GUI shows:
+In the sidebar, pick the number of players and each player's model, adjust the rules if you like, and press **Start game**. The GUI shows:
 
-- a live map of the 3x3 rooms with every player, the trapped rooms and who knows about them (turn off "Show traps" to avoid spoilers)
-- the game log, filterable by event kind and player, including each player's private `think()` notes
-- per-player stats and each player's full conversation (system prompt, every prompt and response)
-- a debug view of every API call: latency, tokens, stop reason, the model that answered, the parsed commands, the reasoning summary, and flags for errors, refusals and responses with no valid command
-- the traceback if the game crashes, plus downloads of the logs
+- **Board:** the rescue code with who holds each digit (positions nobody alive knows are marked red), each player's model, oxygen and status, and the failed radio calls. Turn off "Show secrets" to watch without spoilers.
+- **Story:** everything that happened, including private messages and, optionally, each player's private thoughts.
+- **Players:** stats per player and model (messages, oxygen given, radio calls, votes received, invalid replies, tokens), each player's notebook and every prompt and reply.
+- **API calls:** every call with its prompt, reply, parsed action, validation errors, tokens and latency.
+- **Errors & files:** the traceback if the game crashes, plus downloads of the logs.
 
 **Pause**, **Step** (let exactly one API call through) and **Stop** control a running game. "Start paused" lets you step through a game from the first call.
 
 ### Terminal
 
 ```bash
-python game/main.py
+python game/main.py        # 6 players
+python game/main.py 4      # 4 players
 ```
 
-The general game log is printed while the game runs.
+Players get the models from `SQUIDGPT_MODELS` in turn. The story is printed as it happens.
 
-Either way, when a game ends the general log, each participant's full conversation and `api_calls.jsonl` (every prompt, response, token count and latency) are saved to `logs/test_log_N/`.
+Either way, every game is saved to `logs/game_N/`: the story (`events.txt`, `events.jsonl`), every API call (`api_calls.jsonl`), each player's full conversation and notebook, and `summary.json` with the code, digits, radio calls and winners.
 
 ## Configuration
-
-Environment variables:
 
 | Variable | Default | Description |
 | --- | --- | --- |
 | `KI_TOOLBOX_API_KEY` | (required) | Your KI-Toolbox API key |
 | `KI_TOOLBOX_BASE_URL` | `https://ki-toolbox.scc.kit.edu/api/v1` | API endpoint |
-| `SQUIDGPT_MODEL` | `google.claude-opus-5.5` | Model each participant uses |
+| `SQUIDGPT_MODELS` | all five toolbox models | Comma-separated model IDs, given to players in turn. Also adds custom model IDs to the GUI |
 | `SQUIDGPT_EFFORT` | `default` | `reasoning_effort` to send: `low`, `medium`, `high`, or `default` to send none. Not every model supports it |
-| `SQUIDGPT_VERBOSE` | unset | Set to `1` to print every prompt and response in the terminal |
 
-`SQUIDGPT_MODEL` and `SQUIDGPT_EFFORT` also set the defaults shown in the GUI sidebar.
-
-Models available on the toolbox (pick them in the GUI, or set `SQUIDGPT_MODEL`):
+Models on the toolbox:
 
 | Model ID | Name |
 | --- | --- |
@@ -62,7 +78,15 @@ Models available on the toolbox (pick them in the GUI, or set `SQUIDGPT_MODEL`):
 | `alias.complex-local` | GLM Complex (local) |
 | `alias.medium-local` | DeepSeek Middle (local) |
 
-The GUI also accepts any other model ID. A full game makes roughly 100–200 API calls, so a local model is handy while experimenting.
+A 6-player game makes roughly 170 API calls (2 talk turns, 1 action and sometimes a vote per player per round, over 8 rounds).
+
+## Code layout
+
+- `game/llm.py`: model access through the KI-Toolbox
+- `game/engine.py`: game-independent machinery (players, public and private events, JSON replies with one retry, pause/step/stop, saving logs)
+- `game/last_signal.py`: the rules and prompts of The Last Signal
+- `game/gui.py`: the Streamlit GUI
+- `game/main.py`: terminal runner
 
 ## History
-The project was originally built on ChatGPT and stopped because of OpenAI's usage restrictions. It now runs on the SCC KI-Toolbox at KIT.
+The project started on ChatGPT with a trap-dodging game on a 3x3 map, and was stopped because of OpenAI's usage restrictions. It was revived on the SCC KI-Toolbox, and the trap game was replaced by The Last Signal (the old game is still in the git history).
