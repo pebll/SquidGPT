@@ -15,10 +15,14 @@ class LastSignal(BaseGame):
     MIN_PLAYERS = 3
     MAX_PLAYERS = 8
 
-    def __init__(self, models, max_rounds=8, start_oxygen=8, seats=2, overlap=3, vote_every=2,
-                 talk_passes=2, max_private=2, radio_penalty=2, effort=llm.EFFORT, echo=True):
+    def __init__(self, models, max_rounds=8, start_oxygen=8, seats=2, digits_per_player=2, code_length=None,
+                 vote_every=2, talk_passes=2, max_private=2, radio_penalty=2, effort=llm.EFFORT, echo=True):
         if not self.MIN_PLAYERS <= len(models) <= self.MAX_PLAYERS:
             raise ValueError(f"The Last Signal needs {self.MIN_PLAYERS} to {self.MAX_PLAYERS} players")
+        code_length = code_length or len(models)
+        if not 1 <= digits_per_player <= code_length <= len(models) * digits_per_player:
+            raise ValueError("Need 1 <= digits per player <= code length <= players x digits per player, "
+                             "so that every player has distinct digits and every digit is known by someone")
         super().__init__(models, effort=effort, echo=echo)
         self.max_rounds = max_rounds
         self.start_oxygen = start_oxygen
@@ -27,32 +31,54 @@ class LastSignal(BaseGame):
         self.talk_passes = talk_passes
         self.max_private = max_private
         self.radio_penalty = radio_penalty
-        self.code_length = len(models)
+        self.code_length = code_length
+        self.digits_per_player = digits_per_player
         self.code = "".join(random.choice("0123456789") for _ in range(self.code_length))
         self.radio_attempts = []
         self.rescued = False
         for p in self.players:
             p.oxygen = start_oxygen
             p.known = {}  # code position (1-based) -> digit
-        self.deal_digits(overlap)
+        self.deal_digits()
         for p in self.players:
             p.system = self.system_prompt(p)
 
     # --- setup ----------------------------------------------------------
 
-    def deal_digits(self, overlap):
-        """Each player gets one position nobody else has; `overlap` extra positions go to a second holder."""
-        positions = list(range(1, self.code_length + 1))
-        random.shuffle(positions)
-        for p, pos in zip(self.players, positions):
-            p.known[pos] = self.code[pos - 1]
-        for _ in range(overlap):
-            options = [(p, pos) for p in self.players for pos in range(1, self.code_length + 1)
-                       if pos not in p.known and len(self.holders(pos)) < 2]
-            if not options:
+    def deal_digits(self):
+        """Every player gets the same number of distinct positions, and every position is known by
+        the same number of players (give or take one). Hands are dealt at random, avoiding two players
+        holding exactly the same digits whenever the settings allow it. With the defaults (code
+        length = players, 2 digits each) every digit is known by exactly 2 players."""
+        k, n, length = self.digits_per_player, len(self.players), self.code_length
+        base, extra = divmod(n * k, length)
+        positions = list(range(1, length + 1))
+        best = None
+        for _ in range(500):
+            bonus = set(random.sample(positions, extra))
+            left = {pos: base + (pos in bonus) for pos in positions}
+            hands = []
+            # Taking the positions with the most copies left (random tie-break) can never get stuck.
+            for _ in range(n):
+                hand = sorted(positions, key=lambda pos: (-left[pos], random.random()))[:k]
+                for pos in hand:
+                    left[pos] -= 1
+                hands.append(hand)
+            random.shuffle(hands)
+            twins = n - len({frozenset(h) for h in hands})
+            if best is None or twins < best[0]:
+                best = (twins, hands)
+            if twins == 0:
                 break
-            p, pos = random.choice(options)
-            p.known[pos] = self.code[pos - 1]
+        for p, hand in zip(self.players, best[1]):
+            p.known = {pos: self.code[pos - 1] for pos in sorted(hand)}
+
+    def sharing_rule(self):
+        """How many players know each digit, in words for the prompt."""
+        counts = sorted({len(self.holders(pos)) for pos in range(1, self.code_length + 1)})
+        if len(counts) == 1:
+            return f"Every digit is known by exactly {counts[0]} player{'s' if counts[0] > 1 else ''}."
+        return f"Each digit is known by {counts[0]} or {counts[-1]} players."
 
     def holders(self, position, alive_only=False):
         return [p for p in self.players if position in p.known and (p.alive or not alive_only)]
@@ -65,7 +91,7 @@ class LastSignal(BaseGame):
         return f"""You are {p.name}, a player in "The Last Signal", a game of negotiation, deception and betrayal against other AI players: {others}.
 
 THE SITUATION
-You are all adrift on a damaged boat. The radio can call a rescue boat, but only with the correct {self.code_length}-digit rescue code. Nobody knows the whole code: each player secretly knows some of its digits. You know: {digits}. Some digits are known to two players, some to only one.
+You are all adrift on a damaged boat. The radio can call a rescue boat, but only with the correct {self.code_length}-digit rescue code. Nobody knows the whole code: each player secretly knows some of its digits. Every player knows exactly {self.digits_per_player} digit{'s' if self.digits_per_player > 1 else ''}. You know: {digits}. {self.sharing_rule()}
 
 WINNING
 The player who sends the correct code over the radio is rescued and chooses up to {self.seats - 1} other player(s) to take along. Only those {self.seats} players win; everyone else loses. If nobody sends the correct code within {self.max_rounds} rounds, everyone loses.

@@ -64,6 +64,11 @@ def chip(p, struck=False):
 
 # --- sidebar: settings and controls ----------------------------------------
 
+def set_all_models(model):
+    for i in range(LastSignal.MAX_PLAYERS):
+        st.session_state[f"model_{i}"] = model
+
+
 def sidebar():
     game = st.session_state.get("game")
     active = game is not None and game.status in ACTIVE
@@ -73,24 +78,35 @@ def sidebar():
     st.sidebar.subheader("New game")
     count = st.sidebar.slider("Players", LastSignal.MIN_PLAYERS, LastSignal.MAX_PLAYERS, 6)
     with st.sidebar.expander("Player models", expanded=True):
+        everyone = st.selectbox("Same model for everyone", MODEL_OPTIONS, key="model_all", format_func=llm.model_label)
+        st.button("Set all players to this model", on_click=set_all_models, args=(everyone,), width="stretch")
+        st.divider()
         models = []
         for i in range(count):
-            default = llm.DEFAULT_MODELS[i % len(llm.DEFAULT_MODELS)]
-            models.append(st.selectbox(LastSignal.PLAYER_NAMES[i], MODEL_OPTIONS, key=f"model_{i}",
-                                       index=MODEL_OPTIONS.index(default), format_func=llm.model_label))
+            key = f"model_{i}"
+            if key not in st.session_state:
+                st.session_state[key] = llm.DEFAULT_MODELS[i % len(llm.DEFAULT_MODELS)]
+            models.append(st.selectbox(LastSignal.PLAYER_NAMES[i], MODEL_OPTIONS, key=key, format_func=llm.model_label))
         st.caption("Add other model IDs with the SQUIDGPT_MODELS environment variable.")
     with st.sidebar.expander("Rules"):
         rules = {
             "max_rounds": st.number_input("Rounds", 2, 30, 8),
             "start_oxygen": st.number_input("Starting oxygen", 1, 30, 8),
             "seats": st.number_input("Seats on the rescue boat", 1, count, min(2, count)),
-            "overlap": st.number_input("Extra shared digits", 0, count, min(3, count),
-                                       help="How many code positions are known by two players instead of one."),
+            "digits_per_player": st.number_input("Digits per player", 1, 3, 2),
             "vote_every": st.number_input("Vote every N rounds", 1, 10, 2),
             "talk_passes": st.number_input("Talk turns per round", 1, 5, 2),
             "max_private": st.number_input("Private messages per talk turn", 0, 5, 2),
             "radio_penalty": st.number_input("Oxygen lost on a wrong radio call", 0, 10, 2),
         }
+        k = int(rules["digits_per_player"])
+        rules["code_length"] = st.number_input(
+            "Code length", k, count * k, max(k, min(count, count * k)),
+            help="Defaults to one digit per player. A longer code means fewer players share each digit.")
+        slots, length = count * k, int(rules["code_length"])
+        low, high = slots // length, -(-slots // length)
+        shared = f"exactly {low}" if low == high else f"{low} or {high}"
+        st.caption(f"Each digit will be known by {shared} player(s).")
     effort = st.sidebar.selectbox("Reasoning effort", EFFORTS,
                                   index=EFFORTS.index(llm.EFFORT) if llm.EFFORT in EFFORTS else 0,
                                   help='Sent as reasoning_effort. "default" sends nothing; not every model supports it.')
@@ -346,8 +362,9 @@ game = st.session_state.get("game")
 if game is None:
     st.title("🦑 SquidGPT: The Last Signal")
     st.markdown(
-        "AI players, each running on a different model, are adrift on a boat with a dying radio. "
-        "The rescue code has one digit per player, and every player secretly knows only some of it. "
+        "AI players, each running on a model of your choice, are adrift on a boat with a dying radio. "
+        "Nobody knows the whole rescue code: every player secretly knows 2 of its digits, and every digit "
+        "is known by 2 players. "
         "Whoever sends the correct code picks who comes along on the rescue boat; everyone else loses.\n\n"
         "Oxygen runs out, votes throw players overboard (taking their digits with them), and players can share, "
         "sell or fake the digits they hold. Lying and betrayal are allowed and expected.")

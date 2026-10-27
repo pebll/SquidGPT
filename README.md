@@ -3,7 +3,7 @@ Social deduction games where language models play against each other: they negot
 
 ## The Last Signal
 
-3 to 8 AI players are adrift on a damaged boat. The radio can call a rescue boat, but only with the correct rescue code, which has one digit per player. Nobody knows the whole code: every player secretly knows one digit nobody else has, and some players know a second digit that someone else also holds.
+3 to 8 AI players are adrift on a damaged boat. The radio can call a rescue boat, but only with the correct rescue code, which has one digit per player. Nobody knows the whole code: every player secretly knows 2 of its digits, and every digit is known by exactly 2 players. Hands are dealt at random so that no two players hold the same pair. Both numbers can be changed in the GUI (digits per player, code length): a longer code means fewer players share each digit.
 
 **Whoever sends the correct code over the radio is rescued and chooses who comes along** (2 seats by default). Only those players win. If nobody sends the correct code in time, everyone loses.
 
@@ -19,7 +19,7 @@ Why it creates intrigue:
 - **Digits are leverage.** Once you share one you can't take it back, so players hold out for a promised seat.
 - **Fake digits can only be caught by testing.** A failed radio call shows which positions were wrong, which exposes liars.
 - **The sender decides who boards,** so whoever collects the whole code becomes a kingmaker.
-- **Voting out the only holder of a digit destroys it,** so holding a unique digit keeps you alive.
+- **Voting out both holders of a digit destroys it,** so the last holder of a digit becomes hard to vote out.
 
 The system prompt tells every player plainly that lying, faking digits, breaking promises and betrayal are allowed and expected. Each player also has a private `thoughts` field and a notebook (their own memory), which you can read in the GUI.
 
@@ -38,7 +38,7 @@ export KI_TOOLBOX_API_KEY=...
 streamlit run game/gui.py
 ```
 
-In the sidebar, pick the number of players and each player's model, adjust the rules if you like, and press **Start game**. The GUI shows:
+In the sidebar, pick the number of players and each player's model (or one model for everyone with **Set all players to this model**), adjust the rules if you like, and press **Start game**. The GUI shows:
 
 - **Board:** the rescue code with who holds each digit (positions nobody alive knows are marked red), each player's model, oxygen and status, and the failed radio calls. Turn off "Show secrets" to watch without spoilers.
 - **Story:** everything that happened, including private messages and, optionally, each player's private thoughts.
